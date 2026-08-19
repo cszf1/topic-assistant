@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>本科生科研选题助手 · 帮你定下一个真能做完的题</title>
+<style>
+:root{
+  --bg:#f6f8fa; --card:#fff; --line:#e1e6eb; --fg:#1f2933; --dim:#6b7684;
+  --pri:#2563eb; --pri-d:#1d4ed8;
+  --ok-bg:#f0fdf4; --ok-line:#bbf7d0; --ok-fg:#15803d;
+  --warn-bg:#fffbeb; --warn-line:#fde68a; --warn-fg:#b45309;
+  --bad-bg:#fef2f2; --bad-line:#fecaca; --bad-fg:#b91c1c;
+  --info-bg:#eff6ff; --info-line:#bfdbfe; --info-fg:#1d4ed8;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:20px 14px 70px;background:var(--bg);color:var(--fg);
+  font:14px/1.65 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.wrap{max-width:920px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+.lead{color:var(--dim);font-size:13px;margin:0 0 18px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;
+  padding:16px 18px;margin-bottom:14px}
+.step{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:700;margin:0 0 4px}
+.step .no{background:var(--pri);color:#fff;width:20px;height:20px;border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:0 0 20px}
+.hint{color:var(--dim);font-size:12px;margin:0 0 12px}
+label{display:block;font-size:12px;color:var(--dim);margin:0 0 4px}
+input,select,textarea{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);
+  border-radius:6px;background:#fff;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--pri)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+button{font:inherit;border:none;border-radius:6px;padding:9px 18px;cursor:pointer;
+  background:var(--pri);color:#fff;font-weight:600}
+button:hover{background:var(--pri-d)}
+button:disabled{background:#aab4bf;cursor:not-allowed}
+button.ghost{background:#eef1f4;color:#41505f}
+button.ghost:hover{background:#e2e7ec}
+button.mini{padding:4px 10px;font-size:11.5px;font-weight:500;background:#f2f5f8;
+  color:var(--pri);border:1px solid var(--line);border-radius:5px}
+button.mini:hover{background:var(--info-bg)}
+.note{border-radius:6px;padding:9px 12px;font-size:12.5px;margin:10px 0;line-height:1.55}
+.note.ok{background:var(--ok-bg);border:1px solid var(--ok-line);color:var(--ok-fg)}
+.note.warn{background:var(--warn-bg);border:1px solid var(--warn-line);color:var(--warn-fg)}
+.note.bad{background:var(--bad-bg);border:1px solid var(--bad-line);color:var(--bad-fg)}
+.note.info{background:var(--info-bg);border:1px solid var(--info-line);color:var(--info-fg)}
+.bar{height:4px;background:#e5eaef;border-radius:2px;overflow:hidden;margin:8px 0}
+.bar>i{display:block;height:100%;background:var(--pri);width:0;transition:width .25s}
+.tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--line);color:var(--dim)}
+.tag.ok{background:var(--ok-bg);border-color:var(--ok-line);color:var(--ok-fg)}
+.tag.warn{background:var(--warn-bg);border-color:var(--warn-line);color:var(--warn-fg)}
+.tag.bad{background:var(--bad-bg);border-color:var(--bad-line);color:var(--bad-fg)}
+.tag.info{background:var(--info-bg);border-color:var(--info-line);color:var(--info-fg)}
+.idea{border:1px solid var(--line);border-radius:8px;padding:13px 15px;margin-bottom:11px;background:#fff}
+.idea.top{border-color:var(--ok-line);background:linear-gradient(180deg,#f7fefa,#fff)}
+.idea.dead{opacity:.72;background:#fafbfc}
+.idea h4{margin:0 0 6px;font-size:15px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.idea .why{font-size:12.5px;color:#4b5765;margin:6px 0}
+.kv{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin-top:6px}
+.kv b{color:var(--fg)}
+.src{font-size:10.5px;padding:0 5px;border-radius:3px;border:1px solid var(--line);color:var(--dim)}
+.src.measured{background:#eef6ff;border-color:#bfdbfe;color:#1d4ed8}
+.src.inferred{background:#fffbeb;border-color:#fde68a;color:#b45309}
+details{margin-top:8px}
+summary{cursor:pointer;font-size:12px;color:var(--pri);outline:none;user-select:none}
+.papers{margin-top:8px}
+.paper{background:#fafbfc;border:1px solid var(--line);border-radius:5px;padding:8px 10px;margin-bottom:6px}
+.paper a{color:#1d4ed8;text-decoration:none;font-size:12.5px;font-weight:600}
+.paper a:hover{text-decoration:underline}
+.paper .m{font-size:11px;color:var(--dim);margin-top:3px;display:flex;gap:11px;flex-wrap:wrap}
+.hide{display:none}
+.cfg{font-size:12px}
+.cfg .grid{gap:10px}
+.input-with-btn{display:flex;gap:6px;align-items:center}
+footer{font-size:11.5px;color:var(--dim);line-height:1.7;border-top:1px solid var(--line);
+  padding-top:14px;margin-top:26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>本科生科研选题助手</h1>
+  <p class="lead">不知道毕设做什么？填一下你的情况，AI 出题，然后<b>用真实论文数据核实这题你到底做不做得完</b>。</p>
+
+  <!-- ========== 第 1 步 ========== -->
+  <div class="card">
+    <div class="step"><span class="no">1</span>说说你的情况与想法</div>
+    <p class="hint">条件与需求填得越清楚，AI 出题越贴合，系统也会据此把做不完的题目直接筛掉。</p>
+
+    <div class="grid">
+      <div>
+        <label>专业方向</label>
+        <div class="input-with-btn">
+          <input id="major" list="majorList" placeholder="如：电子信息 / 计算机 / 机械" value="电子信息">
+          <datalist id="majorList"></datalist>
+        </div>
+      </div>
+      <div>
+        <label>兴趣领域（可输入任意关键词）</label>
+        <input id="interest" placeholder="例：图像识别 / 目标检测 / 故障诊断 / 大模型应用">
+      </div>
+      <div>
+        <label>算力条件</label>
+        <select id="gpu">
+          <option value="none">没有显卡，普通笔记本</option>
+          <option value="single" selected>有一张消费级显卡 (如 RTX 3060/4060)</option>
+          <option value="cloud">可用云平台/免费额度 (Colab/AutoDL)</option>
+          <option value="multi">可用实验室多卡服务器</option>
+        </select>
+      </div>
+      <div>
+        <label>数据条件</label>
+        <select id="dataset">
+          <option value="public" selected>只能用网上公开数据集 (Kaggle/GitHub等)</option>
+          <option value="self-collect">有条件自己采集标注</option>
+          <option value="private">能拿到实验室/医院/企业非公开数据</option>
+          <option value="none">没数据，也没采集条件</option>
+        </select>
+      </div>
+      <div>
+        <label>编程水平</label>
+        <select id="codingLevel">
+          <option value="beginner">入门（会写基础 Python 脚本）</option>
+          <option value="mid" selected>中等（能跑通和修改开源项目）</option>
+          <option value="strong">较强（能独立从头实现算法）</option>
+        </select>
+      </div>
+      <div>
+        <label>可投入时间（周数，可自由输入）</label>
+        <input id="weeks" type="number" min="2" max="60" value="16" placeholder="如：16 (一学期)">
+      </div>
+      <div>
+        <label>目标类型（可自由定制输入）</label>
+        <input id="goal" list="goalList" value="毕业设计" placeholder="如：毕业设计 / 科创竞赛 / 投论文 / 课程大作业">
+        <datalist id="goalList">
+          <option value="毕业设计">
+          <option value="学科竞赛 / 科创项目">
+          <option value="想投一篇学术论文">
+          <option value="课程大作业 / 实验课题">
+        </datalist>
+      </div>
+      <div>
+        <label>候选题目数量（可自由调整）</label>
+        <input id="count" type="number" min="2" max="15" value="6" placeholder="如：6">
+      </div>
+    </div>
+
+    <!-- 用户自由输入需求描述框 -->
+    <div style="margin-top:12px">
+      <label><b>✍️ 我的具体研究想法与特殊要求（自由描述，非必填）</b></label>
+      <textarea id="customWish" rows="3" placeholder="例如：
+- 希望做结合物联网与轻量化模型的课题，最好能在树莓派或单片机上跑
+- 导师给的大方向是轴承故障诊断，但我想结合最新的迁移学习或者知识蒸馏
+- 想做偏实际落地系统实现的课题，不要纯理论推导
+- 希望数据集好找一点，代码开源度高"></textarea>
+    </div>
+
+    <!-- 大模型配置面板 -->
+    <details class="cfg" id="cfgDetails" style="margin-top:14px" open>
+      <summary style="font-weight:600">⚙️ 大模型线路（仅远程服务，支持模型枚举与完整响应检查）</summary>
+      <div style="background:#f8fafc;border:1px solid var(--line);border-radius:6px;padding:12px;margin-top:8px">
+        <div class="grid">
+          <div>
+            <label>服务商预设（快捷选择）</label>
+            <select id="presetSelect"></select>
+          </div>
+          <div>
+            <label>API Key / 密钥</label>
+            <input id="apiKey" type="password" placeholder="sk-...">
+          </div>
+        </div>
+        <div class="grid" style="margin-top:10px">
+          <div>
+            <label>Base URL 接口地址</label>
+            <input id="baseUrl" placeholder="https://api.deepseek.com">
+          </div>
+          <div>
+            <label>模型名称 (Model)</label>
+            <div class="input-with-btn">
+              <input id="model" list="modelList" placeholder="deepseek-v4-flash" style="flex:1">
+              <datalist id="modelList"></datalist>
+              <button id="fetchModelsBtn" type="button" class="mini" title="枚举账户模型；失败不代表聊天线路不能用">拉取模型</button>
+              <button id="testConnBtn" type="button" class="mini" title="同时检查模型枚举，并真实调用所选模型验证响应结构">完整检查</button>
+            </div>
+          </div>
+        </div>
+        <div id="fetchModelsMsg" style="margin-top:6px;font-size:11.5px;color:var(--dim)"></div>
+        <p class="hint" style="margin:8px 0 0">
+          💡 仅支持远程 OpenAI Chat Completions 兼容接口。线路检查会真实调用一次所选模型，可能产生极少量 Token 费用。配置与 Key 只保存在当前浏览器 localStorage。
+        </p>
+      </div>
+    </details>
+
+    <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <button id="go">开始帮我选题</button>
+      <button id="stop" class="ghost hide">中止</button>
+      <span id="quota" class="hint" style="margin:0"></span>
+    </div>
+  </div>
+
+  <!-- ========== 进度 ========== -->
+  <div class="card hide" id="progCard">
+    <div class="step"><span class="no">2</span><span id="progTitle">正在出题…</span></div>
+    <div class="bar"><i id="progBar"></i></div>
+    <p class="hint" id="progMsg" style="margin:4px 0 0"></p>
+  </div>
+
+  <!-- ========== 结果 ========== -->
+  <div id="out"></div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script src="angles.js"></script>
+<script src="engine.js"></script>
+<script src="verify.js"></script>
+<script src="ideate.js"></script>
+<script>
+(function(){
+const $ = id => document.getElementById(id);
+const esc = s => String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ---------- 缓存与配置持久化 ---------- */
+const store = (()=>{ let m={};
+  try{ m=JSON.parse(localStorage.getItem('xt_cache')||'{}'); }catch(e){}
+  return { get:k=>m[k], set:(k,v)=>{ m[k]=v; try{ localStorage.setItem('xt_cache',JSON.stringify(m)); }catch(e){} } };
+})();
+
+/* 初始化服务商预设下拉框 */
+const presetSel = $('presetSelect');
+PROVIDER_PRESETS.forEach(p => {
+  const opt = document.createElement('option');
+  opt.value = p.id;
+  opt.textContent = p.name;
+  presetSel.appendChild(opt);
+});
+
+const CFG_KEY = 'xt_llm_cfg';
+const CFG_VERSION = 2;
+let savedCfg = {};
+try { savedCfg = JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch(e){}
+
+// 迁移旧配置：移除本地模型；官方线路变更时采用当前已核实 URL/默认模型，但保留 Key。
+let selectedPreset = PROVIDER_PRESETS.find(p => p.id === savedCfg.preset);
+if (!selectedPreset && savedCfg.baseUrl && !['ollama', 'lmstudio'].includes(savedCfg.preset)) {
+  selectedPreset = PROVIDER_PRESETS.find(p => p.id === 'custom');
+}
+if (!selectedPreset) selectedPreset = PROVIDER_PRESETS[0];
+presetSel.value = selectedPreset.id;
+const keepSavedEndpoint = selectedPreset.id === 'custom' ||
+  (savedCfg.version === CFG_VERSION && savedCfg.preset === selectedPreset.id);
+$('baseUrl').value = keepSavedEndpoint && savedCfg.baseUrl ? savedCfg.baseUrl : selectedPreset.baseUrl;
+$('model').value = keepSavedEndpoint && savedCfg.model ? savedCfg.model : selectedPreset.defaultModel;
+$('apiKey').value = ['ollama', 'lmstudio'].includes(savedCfg.preset) ? '' : (savedCfg.apiKey || '');
+
+// 预设切换事件
+presetSel.addEventListener('change', () => {
+  const pid = presetSel.value;
+  const p = PROVIDER_PRESETS.find(x => x.id === pid);
+  if (p) {
+    if (p.baseUrl) $('baseUrl').value = p.baseUrl;
+    if (p.defaultModel) $('model').value = p.defaultModel;
+    saveCfg();
+    $('fetchModelsMsg').innerHTML = p.docs ? '<span class="hint">已选预设：'+esc(p.name)+'，可前往 <a href="'+esc(p.docs)+'" target="_blank">官网控制台↗</a> 获取 API Key</span>' : '';
+  }
+});
+
+function saveCfg(normalize){
+  const shouldNormalize = normalize !== false;
+  const rawBaseUrl = $('baseUrl').value.trim();
+  const c = {
+    version: CFG_VERSION,
+    preset: presetSel.value,
+    baseUrl: shouldNormalize ? normalizeBaseUrl(rawBaseUrl) : rawBaseUrl,
+    apiKey: $('apiKey').value.trim(),
+    model: $('model').value.trim()
+  };
+  if (shouldNormalize) $('baseUrl').value = c.baseUrl;
+  try{ localStorage.setItem(CFG_KEY, JSON.stringify(c)); }catch(e){}
+  return c;
+}
+
+// 输入过程中不改写地址，避免用户刚键入斜杠就被归一化删除；失焦/调用接口时再规范化。
+['baseUrl', 'apiKey', 'model'].forEach(id => {
+  $(id).addEventListener('input', () => saveCfg(false));
+});
+$('baseUrl').addEventListener('blur', () => saveCfg(true));
+
+/* ---------- 完整线路检查：/models 与真实 chat/completions 分开裁决 ---------- */
+$('testConnBtn').addEventListener('click', async () => {
+  const btn = $('testConnBtn');
+  const msg = $('fetchModelsMsg');
+  const cfg = saveCfg();
+
+  if (!cfg.baseUrl || !cfg.apiKey || !cfg.model) {
+    msg.innerHTML = '<span style="color:var(--bad-fg)">⚠️ 请先填写完整的 Base URL、API Key 和模型名</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '检查中…';
+  msg.innerHTML = '<span class="hint">① 枚举模型　② 真实调用 <code>'+esc(cfg.model)+'</code>　③ 校验 Chat Completions 响应…</span>';
+
+  try {
+    const res = await createIdeator(cfg).diagnose();
+    const modelLine = res.models.ok
+      ? '✅ 模型枚举：'+res.models.total+' 个'
+      : '⚠️ 模型枚举不可用（不影响聊天裁决）：'+esc(res.models.error||'未知错误');
+    const chatLine = res.chat.ok
+      ? '✅ 聊天响应：'+res.chat.latency+'ms，返回「'+esc(String(res.chat.content).slice(0,40))+'」'
+      : '❌ 聊天响应失败：'+esc(res.chat.error||'未知错误');
+    msg.innerHTML = '<div class="note '+(res.ok?'ok':'bad')+'" style="margin:7px 0 0">'+modelLine+'<br>'+chatLine+
+      '<br><b>'+(res.ok?'该模型线路可以用于生成选题。':'该线路当前不能用于生成选题，请按错误修正。')+'</b></div>';
+  } catch (e) {
+    msg.innerHTML = '<span style="color:var(--bad-fg)">❌ 检查失败：'+esc(e.message||e)+'</span>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '完整检查';
+  }
+});
+
+/* ---------- 拉取模型列表按钮 ---------- */
+$('fetchModelsBtn').addEventListener('click', async () => {
+  const btn = $('fetchModelsBtn');
+  const msg = $('fetchModelsMsg');
+  const cfg = saveCfg();
+
+  if (!cfg.baseUrl) {
+    msg.innerHTML = '<span style="color:var(--bad-fg)">⚠️ 请先输入 Base URL</span>';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '拉取中…';
+  msg.innerHTML = '<span class="hint">正在连接 <code>'+esc(cfg.baseUrl)+'</code> 获取模型列表…</span>';
+
+  try {
+    const ideator = createIdeator(cfg);
+    const res = await ideator.fetchModels();
+    const list = res.models || [];
+    if (!list.length) {
+      msg.innerHTML = '<span style="color:var(--warn-fg)">⚠️ 成功响应，但未返回模型条目</span>';
+      return;
+    }
+
+    // 填充 datalist
+    const dl = $('modelList');
+    dl.innerHTML = list.map(m => '<option value="'+esc(m)+'">').join('');
+
+    // 仅在模型名为空时自动选第一个；不擅自覆盖用户明确选择。
+    if (!$('model').value.trim()) {
+      $('model').value = list[0];
+      saveCfg();
+    }
+    const selected = $('model').value.trim();
+    const selectedHint = list.includes(selected)
+      ? '；当前模型在列表中'
+      : '；⚠️ 当前模型不在返回列表中，请下拉改选后再做完整检查';
+    msg.innerHTML = '<span style="color:var(--ok-fg);font-weight:600">✅ 成功拉取 '+list.length+' 个模型</span>'+selectedHint+'。注意：枚举成功不等于聊天一定可用。';
+  } catch (e) {
+    msg.innerHTML = '<span style="color:var(--bad-fg)">❌ 拉取失败: '+esc(e.message||e)+'</span>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '拉取模型';
+  }
+});
+
+const screener = createScreener({
+  angleDict: ANGLE_DICT, cache: store, concurrency: 3,
+  onQuota: n => { $('quota').textContent = 'OpenAlex 剩余额度 ' + n; },
+});
+
+/* 专业候选 datalist */
+const majorList = $('majorList');
+screener.listDisciplines().forEach(d=>{
+  if(d.name==='通用') return;
+  const o = document.createElement('option'); o.value = d.name;
+  majorList.appendChild(o);
+});
+
+/* ---------- 主流程 ---------- */
+let aborted=false;
+function setProg(title,msg,pct){ $('progTitle').textContent=title; $('progMsg').textContent=msg||'';
+  $('progBar').style.width=(pct||0)+'%'; }
+
+$('go').onclick = async () => {
+  aborted=false;
+  $('go').disabled=true; $('stop').classList.remove('hide');
+  $('out').innerHTML=''; $('foot').innerHTML='';
+  $('progCard').classList.remove('hide');
+
+  const weeksNum = parseInt($('weeks').value, 10) || 16;
+  const countNum = parseInt($('count').value, 10) || 6;
+  const profile = {
+    major: $('major').value.trim() || '未填专业',
+    interest: $('interest').value.trim(),
+    gpu: $('gpu').value,
+    dataset: $('dataset').value,
+    codingLevel: $('codingLevel').value,
+    weeks: weeksNum,
+    goal: $('goal').value.trim() || '毕业设计',
+    count: countNum,
+    customWish: $('customWish').value.trim(),
+  };
+  const conditions = {
+    gpu: profile.gpu,
+    dataset: profile.dataset,
+    codingLevel: profile.codingLevel,
+    weeks: profile.weeks
+  };
+
+  try{
+    /* --- 第2步：出题 --- */
+    const cfg = saveCfg();
+    const ideator = createIdeator(cfg);
+    if (!ideator.configured()) {
+      const e = new Error('大模型配置不完整：请填写 Base URL、API Key 和模型名，并先运行“完整检查”。');
+      e.kind = 'not_configured';
+      throw e;
+    }
+    setProg('正在让 AI 出题…', '模型 '+esc(cfg.model)+' 正在根据你的专业、需求与条件生成 '+profile.count+' 个具体候选题目', 15);
+    const g = await ideator.generate(profile);
+    const ideas = g.ideas;
+    const ideaSource = 'llm';
+    if (aborted) return;
+
+    /* --- 第3步：核查 --- */
+    setProg('正在核查这些题目有多少人做过…','正在调取真实文献库进行精准双短语匹配',30);
+    const res = await verifyIdeas(screener, ideas, {
+      conditions, concurrency:3,
+      onProgress: p => {
+        if(aborted) return;
+        setProg('正在核查这些题目有多少人做过…',
+          '('+p.done+'/'+p.total+') '+(p.current?p.current.zh:''),
+          30 + Math.round(p.done/p.total*65));
+      },
+    });
+    if (aborted) return;
+    $('progCard').classList.add('hide');
+    render(res, ideaSource, profile);
+  } catch(e){
+    $('progCard').classList.add('hide');
+    $('out').innerHTML = '<div class="note bad">出错：'+esc(e.message||e)+'</div>';
+  } finally {
+    $('go').disabled=false; $('stop').classList.add('hide');
+  }
+};
+$('stop').onclick = ()=>{ aborted=true; screener.abort(); $('progCard').classList.add('hide');
+  $('go').disabled=false; $('stop').classList.add('hide'); };
+
+/* ---------- 渲染 ---------- */
+const SAT_TAG = { sweet:'ok', crowded:'info', frontier:'warn', empty:'warn', red:'bad' };
+const FIT_TEXT = { go:['可以做','ok'], conditional:['条件需调整','warn'], 'no-go':['你现在做不了','bad'] };
+const NEED_TXT = {
+  gpu:{none:'不需要显卡',single:'需要一张显卡',multi:'需要多卡服务器'},
+  dataset:{public:'用公开数据集',['self-collect']:'需自己采集标注',private:'需非公开数据'},
+  codingLevel:{beginner:'编程入门即可',mid:'需编程中等',strong:'需编程较强'},
+};
+
+function ideaCard(x, top){
+  const fit = FIT_TEXT[x.fitness.verdict];
+  const cls = 'idea'+(top?' top':'')+(x.fitness.verdict==='no-go'?' dead':'');
+  const n = x.needs||{};
+  let h = '<div class="'+cls+'">';
+  h += '<h4>'+(top?'⭐ ':'')+esc(x.zh)+
+       ' <span class="tag '+fit[1]+'">'+fit[0]+'</span>'+
+       ' <span class="tag '+(SAT_TAG[x.saturation.key]||'')+'">'+esc(x.saturation.label)+'</span></h4>';
+
+  if (x.rationale) h += '<div class="why">💡 '+esc(x.rationale)+
+    ' <span class="src inferred">AI 推断</span></div>';
+  if (x.warning) h += '<div class="note warn" style="margin:6px 0">'+esc(x.warning)+'</div>';
+
+  h += '<div class="kv">'+
+    '<span>已有专门研究 <b>'+x.saturation.focusCount+'</b> 篇 <span class="src measured">实测</span></span>'+
+    '<span>领域内提及 <b>'+x.saturation.mentionCount+'</b> 篇</span>'+
+    (n.weeks?'<span>预计 <b>'+n.weeks+'</b> 周 <span class="src inferred">估计</span></span>':'')+
+    (n.gpu?'<span>'+esc(NEED_TXT.gpu[n.gpu]||n.gpu)+'</span>':'')+
+    (n.dataset?'<span>'+esc(NEED_TXT.dataset[n.dataset]||n.dataset)+'</span>':'')+
+    '</div>';
+
+  h += '<div class="note '+(SAT_TAG[x.saturation.key]==='bad'?'bad':
+        SAT_TAG[x.saturation.key]==='ok'?'ok':'warn')+'" style="margin:8px 0 6px">'+
+       esc(x.saturation.note)+'</div>';
+
+  if (x.fitness.conflicts.length){
+    h += '<div class="note '+(x.fitness.verdict==='no-go'?'bad':'warn')+'" style="margin:6px 0">'+
+      '<b>'+(x.fitness.verdict==='no-go'?'为什么你现在做不了：':'需要注意：')+'</b><br>'+
+      x.fitness.conflicts.map(c=>'· '+esc(c.message)).join('<br>')+'</div>';
+  }
+
+  const ev = x.saturation.evidence;
+  h += '<details data-ph="'+esc(x.phrase)+'" data-mode="title_and_abstract">'+
+    '<summary>看前人做过的论文（'+x.saturation.focusCount+' 篇）与检索依据</summary>'+
+    '<div class="hint" style="margin:6px 0">检索式 <code>'+esc(x.phrase)+'</code>　'+
+    '<a href="'+ev.webUrls.googleScholar+'" target="_blank">Google Scholar↗</a>　'+
+    '<a href="'+ev.webUrls.semanticScholar+'" target="_blank">Semantic Scholar↗</a>　'+
+    '<a href="'+ev.focusUrl+'" target="_blank">原始计数↗</a></div>'+
+    '<div class="papers"><span class="hint">展开时自动加载论文详情…</span></div></details>';
+  h += '</div>';
+  return h;
+}
+
+function render(res, ideaSource, profile){
+  const rec = res.recommended, all = res.ideas;
+  let h = '';
+
+  h += '<div class="card"><div class="step"><span class="no">3</span>核查结果</div>'+
+    '<p class="hint">共 '+all.length+' 个候选题，'+
+    '实测查询 '+res.queriesRun+' 次。'+
+    '题目由你配置的大模型根据定制需求生成'+ 
+    '，<b>论文数量全部为 OpenAlex 实测</b>。</p>'+
+    (res.isComplete?'':'<div class="note bad">有 '+res.failed.length+
+      ' 个题目查询失败（'+res.failed.map(f=>esc(f.zh)).join('、')+'），结果不完整。</div>')+
+    '</div>';
+
+  h += '<div class="card"><div class="step"><span class="no">4</span>建议你从这几个里选</div>';
+  if (rec.length){
+    h += '<p class="hint">下面是既<b>符合你的条件</b>、又<b>有前人可参考但没被做透</b>的题目。'+
+         '先看第一个。</p>';
+    rec.forEach(x=>{ h += ideaCard(x,true); });
+  } else {
+    h += '<div class="note warn">没有题目同时满足「你的条件做得完」和「饱和度合适」。'+
+         '建议放宽一个条件后重试 —— 比如把时间从 '+profile.weeks+' 周放宽，'+
+         '或用云平台解决算力。下面是全部候选与各自的原因。</div>';
+  }
+  h += '</div>';
+
+  const rest = all.filter(x=>rec.indexOf(x)<0);
+  if (rest.length){
+    h += '<div class="card"><div class="step" style="font-size:14px"><span class="no">·</span>其余候选（含做不了的，附原因）</div>';
+    rest.forEach(x=>{ h += ideaCard(x,false); });
+    h += '</div>';
+  }
+
+  $('out').innerHTML = h;
+  $('foot').innerHTML = '<b>这份结果怎么读</b><br>'+
+    res.disclaimer.map(s=>'· '+esc(s)).join('<br>')+
+    '<br>· 标 <span class="src measured">实测</span> 的数字来自 OpenAlex，可点开逐篇核对；'+
+    '标 <span class="src inferred">AI 推断</span> 的是模型估计，仅供参考。';
+}
+
+/* 展开 details 时自动载入论文列表 */
+document.addEventListener('toggle', async e=>{
+  const d = e.target;
+  if (!d.matches || !d.matches('details[data-ph]') || !d.open) return;
+  const box = d.querySelector('.papers');
+  if (!box || box.dataset.loaded) return;
+  box.dataset.loaded = 'true';
+  box.innerHTML = '<span class="hint">正在调取真实文献与元数据…</span>';
+  const r = await screener.fetchPaperList(d.dataset.mode, d.dataset.ph, 10);
+  if(!r.ok){ box.innerHTML='<div class="note bad">载入失败：'+esc(r.error)+'</div>'; return; }
+  if(!r.papers.length){ box.innerHTML='<div class="hint">没有检索到公开论文（说明确实几乎没人做过）。</div>'; return; }
+  box.innerHTML = r.papers.map(p=>'<div class="paper">'+
+    '<a href="'+esc(p.doi||p.openalexUrl||'#')+'" target="_blank">'+esc(p.title)+' ↗</a>'+
+    '<div class="m"><span>📅 '+(p.year||'未知')+'</span><span>🔥 被引 '+p.citedBy+' 次</span>'+
+    (p.topic?'<span style="background:#e0f2fe;color:#0369a1;padding:0 5px;border-radius:3px">🏷️ '+esc(p.topic)+'</span>':'')+
+    (p.doi?'<span>🔗 <a href="'+esc(p.doi)+'" target="_blank">DOI: '+esc(p.doi.replace('https://doi.org/',''))+'</a></span>':'')+
+    '</div></div>').join('');
+}, true);
+})();
+</script>
+</body>
+</html>
