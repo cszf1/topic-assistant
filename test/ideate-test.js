@@ -193,6 +193,70 @@ function mockLLM() {
   ck('覆盖不同难度（既有 gpu:none 也有 gpu:multi）',
      r.ideas.some(x => x.needs.gpu === 'none') && r.ideas.some(x => x.needs.gpu === 'multi'));
 
+  hr('4b. 供应商返回格式兼容');
+  const oneIdea = { zh: '视网膜血管分割', objectEn: 'retinal vessel segmentation',
+    methodEn: 'attention U-Net', needs: { gpu: 'single', dataset: 'public', weeks: 12, codingLevel: 'mid' } };
+  const compatResponse = body => ({ ok: true, status: 200,
+    json: async () => body, text: async () => JSON.stringify(body) });
+  const compatCases = [
+    ['content 分片数组', { choices: [{ message: { content: [{ type: 'text', text: JSON.stringify({ ideas: [oneIdea] }) }] } }] }],
+    ['旧式 completions.text', { choices: [{ text: JSON.stringify({ ideas: [oneIdea] }) }] }],
+    ['Responses output_text', { output_text: JSON.stringify({ ideas: [oneIdea] }) }],
+    ['tool call arguments', { choices: [{ message: { tool_calls: [{ function: { arguments: JSON.stringify({ ideas: [oneIdea] }) } }] } }] }],
+    ['候选列表别名', { candidates: [oneIdea] }],
+  ];
+  for (const [name, body] of compatCases) {
+    const compatible = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+      maxRetries: 0, fetchImpl: async () => compatResponse(body) });
+    let result = null;
+    try { result = await compatible.generate({ ...PROFILE, count: 1 }); } catch (e) {}
+    ck(name + ' -> 解析成功', !!result && result.ideas.length === 1 &&
+      result.ideas[0].objectEn === oneIdea.objectEn);
+  }
+  const trailing = ide.parseIdeas('{"ideas":[{"title":"带尾逗号","object_en":"retinal vessel segmentation",},],}')[0];
+  ck('尾逗号 -> 解析成功', trailing && trailing.objectEn === 'retinal vessel segmentation');
+  const aliases = ide.parseIdeas('{"items":[{"title":"中文题目","research_object":"retinal vessel segmentation","requirements":{"gpu":"无显卡","dataset":"公开数据集","codingLevel":"中等","weeks":"12周"}}]}')[0];
+  ck('字段别名与中文条件 -> 归一化成功', aliases && aliases.needs.gpu === 'none' &&
+    aliases.needs.dataset === 'public' && aliases.needs.codingLevel === 'mid' && aliases.needs.weeks === 12);
+  const stringComma = ide.parseIdeas('{"ideas":[{"zh":"对比 a,b,}","objectEn":"retinal vessel segmentation",}]}')[0];
+  ck('字符串内逗号不被尾逗号修复篡改', stringComma && stringComma.zh === '对比 a,b,}');
+  const bracketText = ide.parseIdeas('参见 [12]，建议如下：{"ideas":[{"objectEn":"retinal vessel segmentation"}]}');
+  ck('解释文字中的中括号不截胡 JSON', bracketText.length === 1 &&
+    bracketText[0].objectEn === 'retinal vessel segmentation');
+  let truncatedRetryCalls = 0;
+  const truncatedRetryIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async () => {
+      truncatedRetryCalls++;
+      if (truncatedRetryCalls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify({
+            choices: [{
+              finish_reason: 'length',
+              message: { content: '{"ideas":[{"zh":"半截","objectEn":"retinal vessel segmentation"' },
+            }],
+          }),
+        };
+      }
+      return compatResponse({ choices: [{ finish_reason: 'stop', message: {
+        content: JSON.stringify({ ideas: [oneIdea] }) } }] });
+    } });
+  const recovered = await truncatedRetryIde.generate({ ...PROFILE, count: 1 });
+  ck('首次截断后自动紧凑重试', recovered.ok && recovered.recovered === true && truncatedRetryCalls === 2);
+
+  const parsedObjectIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0, fetchImpl: async () => compatResponse({ output_parsed: { ideas: [oneIdea] } }) });
+  const parsedObject = await parsedObjectIde.generate({ ...PROFILE, count: 1 });
+  ck('结构化 output_parsed -> 解析成功', parsedObject.ok &&
+    parsedObject.ideas[0].objectEn === oneIdea.objectEn);
+
+  let truncatedJsonErr = null;
+  try { ide.parseIdeas('{"ideas":[{"zh":"未完成","objectEn":"retinal vessel segmentation","needs":{"gpu":"single","dataset":"public'); } catch (e) { truncatedJsonErr = e; }
+  ck('半截 JSON -> 明确识别为截断', !!truncatedJsonErr && truncatedJsonErr.kind === 'truncated_json');
+
   hr('5. 容错解析（模型输出不规范时不能崩）');
   const cases = [
     ['裹 markdown 代码块', '```json\n{"ideas":[{"zh":"题目A","objectEn":"bearing fault diagnosis","methodEn":"few-shot learning"}]}\n```'],
@@ -253,6 +317,72 @@ function mockLLM() {
   ck('正式调用使用最小兼容负载，不强塞 temperature/response_format',
      rr.ok && !('temperature' in sentBody) && !('response_format' in sentBody),
      JSON.stringify(sentBody));
+
+  ck('正式调用默认带有 JSON 输出预算', rr.ok && sentBody.max_tokens === 6144,
+     JSON.stringify(sentBody));
+
+  let tokenFieldCalls = 0;
+  const tokenCompatIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async (url, init) => {
+      tokenFieldCalls++;
+      const body = JSON.parse(init.body);
+      if (tokenFieldCalls === 1) return { ok: false, status: 400,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ error: { message: 'Unsupported parameter: max_tokens' } }) };
+      if (body.max_completion_tokens !== 6144) throw new Error('missing max_completion_tokens');
+      return mockLLM();
+    } });
+  const tokenCompat = await tokenCompatIde.generate(PROFILE);
+  ck('max_tokens 不兼容时降级到 max_completion_tokens',
+     tokenCompat.ok && tokenFieldCalls === 2, 'calls=' + tokenFieldCalls);
+
+  let noTokenCalls = 0;
+  const noTokenIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async (url, init) => {
+      noTokenCalls++;
+      const body = JSON.parse(init.body);
+      if (noTokenCalls < 3) return { ok: false, status: 422,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ error: { message: 'unknown parameter max_completion_tokens' } }) };
+      if ('max_tokens' in body || 'max_completion_tokens' in body) throw new Error('token field should be absent');
+      return mockLLM();
+    } });
+  const noToken = await noTokenIde.generate(PROFILE);
+  ck('两种 token 参数都不兼容时移除预算参数', noToken.ok && noTokenCalls === 3,
+     'calls=' + noTokenCalls);
+
+  let valueErrorCalls = 0;
+  const valueErrorIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async () => {
+      valueErrorCalls++;
+      return { ok: false, status: 422,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ error: { message: 'max_tokens: 6144 exceeds model maximum of 4096' } }) };
+    } });
+  let valueErr = null;
+  try { await valueErrorIde.generate(PROFILE); } catch (e) { valueErr = e; }
+  ck('token 数值超限不误判为参数名不兼容', !!valueErr && valueErrorCalls === 1,
+     'calls=' + valueErrorCalls);
+
+  let abortCalls = 0;
+  const abortIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async () => {
+      abortCalls++;
+      const response = { ok: true, status: 200,
+        headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: {
+          content: 'not-json' } }] }) };
+      abortIde.abort(); // 精确模拟第一次请求返回后、解析/紧凑重试前用户点击停止
+      return response;
+    } });
+  let abortErr = null;
+  try { await abortIde.generate(PROFILE); } catch (e) { abortErr = e; }
+  ck('格式失败后用户停止不再发出紧凑重试', abortCalls === 1 && !!abortErr,
+     'calls=' + abortCalls);
 
   let calls = 0;
   const retryIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
