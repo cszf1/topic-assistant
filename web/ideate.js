@@ -62,7 +62,14 @@ const IDEATE_SYSTEM_PROMPT = [
   '   - codingLevel: "beginner" | "mid" | "strong"',
   '   请诚实评估，不要为了让题目好看而低报难度。',
   '4. rationale：一句话说明为什么这个题目适合这个学生（结合他的专业与条件）。',
-  '5. 覆盖不同难度：既要有保守稳妥的，也要有一两个有挑战的，让学生自己权衡。',
+  '5. onboarding：这个学生选了这题之后，第一步该怎么动。三个字段都必须给，都要具体：',
+  '   - firstStep：开题第一周就能上手做的一件具体事。要能立刻执行，',
+  '     例如「先跑通 XXX 公开数据集上的 baseline，把原始精度复现出来」，',
+  '     不要写「查阅文献」「学习相关知识」这种放在任何题目上都成立的空话。',
+  '   - keyRisk：这个题目最可能卡住本科生的那一个难点，以及它为什么难。',
+  '   - startFrom：建议从哪个公开数据集或哪类开源实现入手。',
+  '     只写你确实知道存在的，不确定就描述该去哪类资源找，不要编造仓库名或链接。',
+  '6. 覆盖不同难度：既要有保守稳妥的，也要有一两个有挑战的，让学生自己权衡。',
   '',
   '严禁做的事：',
   '- 严禁判断题目是否新颖、是否有人做过、有多少篇论文 —— 这由真实文献库核查，不是你的工作。',
@@ -72,7 +79,8 @@ const IDEATE_SYSTEM_PROMPT = [
   '只输出 JSON，不要任何解释文字、不要 markdown 代码块。格式：',
   '{"ideas":[{"zh":"中文题目","objectEn":"...","methodEn":"...",',
   '"needs":{"gpu":"none","dataset":"public","weeks":12,"codingLevel":"mid"},',
-  '"rationale":"..."}]}',
+  '"rationale":"...",',
+  '"onboarding":{"firstStep":"...","keyRisk":"...","startFrom":"..."}}]}',
 ].join('\n');
 
 function buildUserPrompt(profile) {
@@ -119,7 +127,7 @@ function createIdeator(cfg) {
   const c = Object.assign({
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-v4-flash',
-    timeoutMs: 60000,
+    timeoutMs: 180000,
     maxRetries: 1,
     // 最小兼容请求默认不发送 temperature / response_format；仅显式开启才发送。
     temperature: null,
@@ -132,12 +140,18 @@ function createIdeator(cfg) {
     return !!(c.apiKey && c.baseUrl && c.model && doFetch);
   }
 
+  // 在飞的请求，供界面「停止」按钮真正掐断，而不是只让结果不显示。
+  const inFlight = new Set();
+  let abortedByUser = false;
+  function abort() {
+    abortedByUser = true;
+    for (const ctl of inFlight) { try { ctl.abort(); } catch (e) { /* 已中止 */ } }
+    inFlight.clear();
+  }
+
   function headers() {
     const h = { 'Content-Type': 'application/json' };
     if (c.apiKey) h.Authorization = 'Bearer ' + c.apiKey;
-    if (/openrouter\.ai/i.test(c.baseUrl)) {
-      h['X-OpenRouter-Title'] = '本科生科研选题助手';
-    }
     return h;
   }
 
@@ -176,16 +190,21 @@ function createIdeator(cfg) {
     if (!c.baseUrl || !doFetch) throw new Error('缺少 Base URL 或当前环境没有 fetch');
     const url = endpoint(c.baseUrl, path);
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs || c.timeoutMs) : null;
+    let timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs || c.timeoutMs) : null;
+    const stopTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    if (ctl) inFlight.add(ctl);
     try {
       const res = await doFetch(url, Object.assign({}, init || {}, {
         headers: Object.assign({}, headers(), (init && init.headers) || {}),
         signal: ctl ? ctl.signal : undefined,
       }));
+      // 超时只覆盖建连与响应头。正文可能慢慢吐（推理模型尤其如此），
+      // 此时打断会把真正的超时伪装成“200 但空响应”，所以拿到响应头就解除。
+      stopTimer();
       // 先取原文再解析：部分供应商（如 DeepSeek）出错时返回无 content-type 的纯文本，
       // 直接 res.json() 会把真正原因吐成“不是 JSON”而丢掉信息。
       let rawText = null;
-      if (typeof res.text === 'function') rawText = await res.text().catch(() => null);
+      if (typeof res.text === 'function') rawText = await res.text();
       if (!res.ok) throw cleanError(res.status, rawText || '', action || '请求');
       let data;
       if (rawText !== null) {
@@ -205,20 +224,39 @@ function createIdeator(cfg) {
       err.kind = /AbortError|aborted/i.test(msg) ? 'timeout' : 'network';
       throw err;
     } finally {
-      if (timer) clearTimeout(timer);
+      stopTimer();
+      if (ctl) inFlight.delete(ctl);
     }
   }
 
   function extractContent(data) {
-    const msg = data && data.choices && data.choices[0] && data.choices[0].message;
+    const choice = data && data.choices && data.choices[0];
+    const msg = choice && choice.message;
     const content = msg && msg.content;
     if (typeof content === 'string' && content.trim()) return content;
     if (Array.isArray(content)) {
       const text = content.map(x => typeof x === 'string' ? x : (x && x.text) || '').join('').trim();
       if (text) return text;
     }
-    const err = new Error('接口返回 200，但缺少 choices[0].message.content；该模型可能不是 Chat Completions 文本模型');
-    err.kind = 'incompatible_response';
+    // 预设里多数默认模型是推理模型，正文为空通常是额度耗在思维链上，
+    // 而不是“这不是文本模型”。按证据分开裁决，别给出误导性诊断。
+    const reasoning = msg && (msg.reasoning_content || msg.reasoning);
+    const hasReasoning = typeof reasoning === 'string' && reasoning.trim();
+    const finish = choice && choice.finish_reason;
+    let err;
+    if (finish === 'length') {
+      err = new Error('模型还没输出正文就到达长度上限' +
+        (hasReasoning ? '，额度被思维链占满' : '') +
+        '；请换成非推理模型，或调高该模型的输出上限');
+      err.kind = 'truncated';
+    } else if (hasReasoning) {
+      err = new Error('模型只返回了思维链（reasoning_content），正文 content 为空；请换成非推理模型再试');
+      err.kind = 'reasoning_only';
+    } else {
+      err = new Error('接口返回 200，但缺少 choices[0].message.content；该模型可能不是 Chat Completions 文本模型');
+      err.kind = 'incompatible_response';
+    }
+    err.finishReason = finish || null;
     throw err;
   }
 
@@ -282,6 +320,7 @@ function createIdeator(cfg) {
     if (c.jsonMode === true) body.response_format = { type: 'json_object' };
 
     let lastErr = null;
+    abortedByUser = false;
     for (let i = 0; i <= c.maxRetries; i++) {
       try {
         const r = await request('chat/completions', {
@@ -290,6 +329,8 @@ function createIdeator(cfg) {
         return extractContent(r.data);
       } catch (e) {
         lastErr = e;
+        // 用户主动停止产生的 AbortError 与真超时同 kind，不能拿去重试。
+        if (abortedByUser) break;
         const retryable = e.kind === 'network' || e.kind === 'timeout' ||
           e.kind === 'rate_limit' || e.kind === 'upstream';
         if (!retryable || i >= c.maxRetries) break;
@@ -333,11 +374,24 @@ function createIdeator(cfg) {
     const pick = (v, allow, dft) =>
       allow.includes(String(v)) ? String(v) : dft;
     const weeks = parseInt(n.weeks, 10);
+    // 上手路径整体可缺失：模型不给就是不给，不编造，界面按“未提供”处理。
+    const ob = x.onboarding || x.onBoarding || {};
+    const pickText = v => {
+      const s = String(v == null ? '' : v).trim();
+      return s ? s : null;
+    };
+    const onboarding = {
+      firstStep: pickText(ob.firstStep || ob.first_step),
+      keyRisk: pickText(ob.keyRisk || ob.key_risk),
+      startFrom: pickText(ob.startFrom || ob.start_from),
+    };
     return {
       zh: String(x.zh || x.title || x.topic || objectEn).trim(),
       objectEn,
       methodEn: String(x.methodEn || x.method_en || x.method || '').trim(),
       rationale: x.rationale ? String(x.rationale).trim() : null,
+      onboarding: (onboarding.firstStep || onboarding.keyRisk || onboarding.startFrom)
+        ? onboarding : null,
       needs: {
         gpu: pick(n.gpu, ['none', 'single', 'multi'], 'single'),
         dataset: pick(n.dataset, ['public', 'self-collect', 'private'], 'public'),
@@ -366,6 +420,7 @@ function createIdeator(cfg) {
   return {
     generate,
     configured,
+    abort,
     diagnose,
     testConnection,
     fetchModels,

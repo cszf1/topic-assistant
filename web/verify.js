@@ -197,6 +197,7 @@ async function verifyOne(screener, idea, conditions) {
     zh: idea.zh || (methodEn ? objectEn + ' + ' + methodEn : objectEn),
     objectEn, methodEn, phrase: ph,
     rationale: idea.rationale || null,        // LLM 给的"为什么推荐"，标注为推断
+    onboarding: idea.onboarding || null,      // LLM 给的上手路径，标注为推断
     needs: idea.needs || null,                // LLM 估计的条件需求，标注为推断
     saturation: {                             // 🔵 实测
       focusCount: f.count,                    // 专门以此为主题的论文数
