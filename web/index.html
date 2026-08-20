@@ -40,6 +40,7 @@
   /* 主题与强调色：暮金陶土、宣白、松绿与温润金 */
   --primary: #d08a78;
   --primary-hover: #df9d8d;
+  --primary-fg: #161410;
   --primary-subtle: rgba(208, 138, 120, 0.14);
   --primary-border: rgba(208, 138, 120, 0.35);
 
@@ -52,14 +53,17 @@
   --ok-bg: rgba(40, 58, 48, 0.65);
   --ok-border: rgba(155, 176, 162, 0.45);
   --ok-fg: #9bb0a2;
+  --ok-icon-fg: #161410;
 
   --warn-bg: rgba(58, 48, 30, 0.65);
   --warn-border: rgba(223, 178, 124, 0.45);
   --warn-fg: #dfb27c;
+  --warn-icon-fg: #161410;
 
   --bad-bg: rgba(62, 34, 30, 0.65);
   --bad-border: rgba(224, 122, 104, 0.45);
   --bad-fg: #e07a68;
+  --bad-icon-fg: #161410;
 
   --info-bg: rgba(32, 45, 56, 0.65);
   --info-border: rgba(133, 167, 194, 0.45);
@@ -98,6 +102,7 @@ html[data-theme="light"] {
 
   --primary: #8f3f32;
   --primary-hover: #732f24;
+  --primary-fg: #ffffff;
   --primary-subtle: rgba(143, 63, 50, 0.09);
   --primary-border: rgba(143, 63, 50, 0.3);
 
@@ -108,19 +113,22 @@ html[data-theme="light"] {
 
   --ok-bg: rgba(63, 83, 72, 0.12);
   --ok-border: rgba(63, 83, 72, 0.35);
-  --ok-fg: #3f5348;
+  --ok-fg: #2c4236;
+  --ok-icon-fg: #ffffff;
 
   --warn-bg: rgba(153, 122, 0, 0.12);
   --warn-border: rgba(153, 122, 0, 0.35);
-  --warn-fg: #997a00;
+  --warn-fg: #805b00;
+  --warn-icon-fg: #ffffff;
 
   --bad-bg: rgba(143, 63, 50, 0.12);
   --bad-border: rgba(143, 63, 50, 0.35);
   --bad-fg: #8f3f32;
+  --bad-icon-fg: #ffffff;
 
   --info-bg: rgba(45, 74, 96, 0.12);
   --info-border: rgba(45, 74, 96, 0.35);
-  --info-fg: #2d4a60;
+  --info-fg: #1d3c52;
 
   --inferred-bg: rgba(143, 63, 50, 0.06);
   --inferred-border: rgba(143, 63, 50, 0.22);
@@ -283,16 +291,13 @@ html[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #161410;
+  color: var(--primary-fg);
   font-family: var(--font-mono);
   font-weight: 800;
   font-size: 13px;
   letter-spacing: 0.1em;
   flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-}
-html[data-theme="light"] .hero-logo {
-  color: #ffffff;
 }
 
 h1 {
@@ -452,10 +457,7 @@ h1 {
 .sitem.on i {
   background: var(--primary);
   border-color: var(--primary);
-  color: #161410;
-}
-html[data-theme="light"] .sitem.on i {
-  color: #ffffff;
+  color: var(--primary-fg);
 }
 
 .srail {
@@ -697,10 +699,7 @@ input:focus, select:focus, textarea:focus {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #161410;
-}
-html[data-theme="light"] .radio-card.active .radio-card-dot::after {
-  background: #ffffff;
+  background: var(--primary-fg);
 }
 
 /* 兴趣关键词标签云 */
@@ -735,7 +734,7 @@ button {
   padding: 8px 18px;
   cursor: pointer;
   background: var(--primary);
-  color: #161410;
+  color: var(--primary-fg);
   font-weight: 700;
   font-size: 13.5px;
   transition: all var(--transition-fast);
@@ -744,9 +743,6 @@ button {
   align-items: center;
   justify-content: center;
   gap: 6px;
-}
-html[data-theme="light"] button {
-  color: #ffffff;
 }
 button:hover:not(:disabled) {
   background: var(--primary-hover);
@@ -1180,10 +1176,9 @@ button.lg {
   font-weight: 800;
   flex-shrink: 0;
 }
-.v-card.ok .v-icon { background: var(--ok-fg); color: #161410; }
-.v-card.warn .v-icon { background: var(--warn-fg); color: #161410; }
-.v-card.bad .v-icon { background: var(--bad-fg); color: #161410; }
-html[data-theme="light"] .v-icon { color: #ffffff !important; }
+.v-card.ok .v-icon { background: var(--ok-fg); color: var(--ok-icon-fg); }
+.v-card.warn .v-icon { background: var(--warn-fg); color: var(--warn-icon-fg); }
+.v-card.bad .v-icon { background: var(--bad-fg); color: var(--bad-icon-fg); }
 
 .v-body b { display: block; font-size: 13px; font-weight: 750; color: var(--fg); margin-bottom: 2px; }
 .v-body span { font-size: 12px; color: var(--fg-secondary); line-height: 1.5; }
