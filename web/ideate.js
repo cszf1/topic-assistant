@@ -217,15 +217,188 @@ function resolveAdapter(protocol) {
   return PROTOCOL_ADAPTERS[protocol] || PROTOCOL_ADAPTERS['openai-chat'];
 }
 
-/** 接受 BaseURL 或完整端点，统一还原成不带尾斜杠的 API 根地址。 */
+/**
+ * 接受 BaseURL 或完整端点，统一还原成不带尾斜杠的 API 根地址。
+ *
+ * 约定对齐 Cherry Studio / New API 生态（issue #11750 / #11655）：
+ *   - 结尾带 `#`：强制原样使用，不补任何版本段（用于 Open-WebUI 这类非 /v1 网关）
+ *   - 其余情况保留用户原有路径，由 candidateApiRoots() 负责探测要不要补 /v1
+ */
 function normalizeBaseUrl(raw) {
-  return String(raw || '').trim()
+  const s = String(raw || '').trim();
+  // `#` 结尾：用户明确要求原样地址，只去掉 `#` 本身
+  if (s.endsWith('#')) return s.slice(0, -1).replace(/\/+$/, '');
+  return s
     .replace(/\/+$/, '')
     .replace(/\/(?:chat\/completions|models)$/i, '');
 }
 
+/** 用户是否用 `#` 锁定了地址（不得自动补 /v1）。 */
+function isPinnedBaseUrl(raw) {
+  return String(raw || '').trim().endsWith('#');
+}
+
+/**
+ * 生成要依次尝试的 API 根地址候选。
+ * 纯前端没有后端可以帮用户试错，用户填 `https://api.x.com`（不带 /v1）
+ * 时如果只请求 /models 就会 404，这是「拉不到模型列表」的最常见原因。
+ */
+function candidateApiRoots(rawBaseUrl) {
+  const root = normalizeBaseUrl(rawBaseUrl);
+  if (!root) return [];
+  if (isPinnedBaseUrl(rawBaseUrl)) return [root];
+  const out = [root];
+  // 已带版本段（/v1、/v1beta、/api/paas/v4 等）就不再补
+  if (!/\/(?:v\d+[a-z]*|api)(?:\/[^/]+)*$/i.test(root)) {
+    out.push(root + '/v1');
+  }
+  return out;
+}
+
 function endpoint(baseUrl, path) {
   return normalizeBaseUrl(baseUrl) + '/' + String(path).replace(/^\/+/, '');
+}
+
+/* ------------------------------------------------------- 思维链剥离 */
+
+/** 常见思维链标签对（小写比较）。 */
+const REASONING_TAGS = [
+  ['<think>', '</think>'],
+  ['<thinking>', '</thinking>'],
+  ['<reasoning>', '</reasoning>'],
+  ['<analysis>', '</analysis>'],
+  ['<｜begin_of_thought｜>', '<｜end_of_thought｜>'],
+];
+
+/**
+ * 从正文中剥离思维链，返回 { text, reasoning, unclosed }。
+ *
+ * 采用 SillyTavern reasoning.js:#autoParseReasoningFromMessage 的索引法而不是正则配对，
+ * 因为真实流式下有三种正则处理不了的情况：
+ *   1. 只有闭合标签（首块丢失或供应商把开标签当作 prefill 吐掉）
+ *   2. 开标签未闭合（输出被长度上限截断）
+ *   3. 思维链里嵌套同名标签
+ */
+function stripReasoning(raw) {
+  let s = String(raw == null ? '' : raw);
+  let reasoning = '';
+  let unclosed = false;
+
+  for (const [open, close] of REASONING_TAGS) {
+    const lower = s.toLowerCase();
+    const openAt = lower.indexOf(open);
+    const closeAt = lower.indexOf(close);
+
+    // 情况 1：只有闭合标签 —— 它之前的全部内容都是思维链。
+    // 但必须先排除「标签其实是正文 JSON 字符串里的字面量」：
+    // 题目完全可能叫「基于</think>标签解析的推理链评测」，
+    // 此时若按边界切掉，会把 JSON 开头吃掉造成静默数据破坏。
+    if (openAt < 0 && closeAt >= 0) {
+      const before = s.slice(0, closeAt);
+      // `{"` / `[{` / `["` 是真正的 JSON 结构起始特征；
+      // 思维链里的裸 `{`（如「我想用 {a:1} 结构」）不会命中。
+      if (/[{[]\s*["{[]/.test(before)) continue;
+      reasoning += before;
+      s = s.slice(closeAt + close.length);
+      continue;
+    }
+    if (openAt < 0) continue;
+
+    // 情况 2：有开标签但没闭合 —— 开标签之后全部是未完成的思维链
+    if (closeAt < 0) {
+      reasoning += s.slice(openAt + open.length);
+      s = s.slice(0, openAt);
+      unclosed = true;
+      continue;
+    }
+
+    // 正常成对：可能多段，逐段剥离
+    while (true) {
+      const lo = s.toLowerCase();
+      const o = lo.indexOf(open);
+      if (o < 0) break;
+      const cl = lo.indexOf(close, o + open.length);
+      if (cl < 0) {
+        reasoning += s.slice(o + open.length);
+        s = s.slice(0, o);
+        unclosed = true;
+        break;
+      }
+      reasoning += s.slice(o + open.length, cl);
+      s = s.slice(0, o) + s.slice(cl + close.length);
+    }
+  }
+
+  return { text: s.trim(), reasoning: reasoning.trim(), unclosed };
+}
+
+/**
+ * 把模型原始输出归一成「可解析正文 + 思维链」。
+ * parseIdeas 与 generate 共用，保证展示给用户的 raw 和实际解析的文本一致，
+ * 不会出现「题目解对了但 raw 里还挂着思维链」。
+ */
+function extractPayloadText(raw) {
+  const s0 = String(raw == null ? '' : raw).replace(/^\uFEFF/, '').trim();
+  const stripped = stripReasoning(s0);
+  let text = stripped.text;
+  // 模型漏写闭合标签时，正文会被当成思维链吐掉；
+  // 若剥离后正文为空而思维链里含 JSON，把它抢回来。
+  if (!text && stripped.unclosed && stripped.reasoning) {
+    const brace = stripped.reasoning.indexOf('{');
+    if (brace >= 0) {
+      text = stripped.reasoning.slice(brace).trim();
+      return { text: stripReasoning(text).text || text, reasoning: stripped.reasoning.slice(0, brace).trim(),
+        unclosed: true, salvagedFromReasoning: true };
+    }
+  }
+  text = text.replace(/^```(?:json|javascript|js)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  return { text, reasoning: stripped.reasoning, unclosed: stripped.unclosed };
+}
+
+/* ------------------------------------------------------- 推理模型与输出预算 */
+
+/**
+ * 推理（思维链）模型识别。
+ * 这类模型会先输出大量思维链，而思维链 **同样计入 max_tokens 预算**，
+ * 不单独加预算就会把真正要的 JSON 正文挤成 finish_reason=length。
+ */
+const REASONING_MODEL_RE = new RegExp(
+  '(?:^|[\\/_.-])(' + [
+    'o1', 'o3', 'o4', 'gpt-5',                     // OpenAI 推理系
+    'deepseek-r\\d+', 'deepseek-reasoner',         // DeepSeek R 系
+    'qwq', 'qwen3?-?thinking', 'qvq',              // 阿里
+    'glm-z\\d+', 'glm-4\\.\\d+-?thinking',         // 智谱
+    'kimi-?k\\d+-?thinking', 'moonshot-?thinking',  // Kimi
+    'minimax-?m\\d+',                              // MiniMax M 系
+    'magistral', 'phi-4-reasoning',
+    'thinking', 'reasoner', 'reasoning',
+  ].join('|') + ')(?:$|[\\/_.:-])', 'i');
+
+function isReasoningModel(modelId) {
+  const id = String(modelId || '');
+  // grok-4-fast-non-reasoning 这类名字里带 non-reasoning 的是非推理变体
+  if (/non-?reasoning|non-?thinking|no-?think/i.test(id)) return false;
+  return REASONING_MODEL_RE.test(id);
+}
+
+/** 每道题目的 JSON 约占输出预算（token）。 */
+const TOKENS_PER_IDEA = 720;
+/** JSON 骨架与冗余的固定开销。 */
+const TOKENS_JSON_OVERHEAD = 512;
+/** 思维链额外预算（参考 SillyTavern chat-completions.js:341 给 thinking 单独留额度）。 */
+const TOKENS_REASONING_RESERVE = 4096;
+
+/**
+ * 根据题数与是否推理模型估算输出预算。
+ * 固定 6144 在「8 题 + 推理模型」下必然不够，这是 length 截断的直接原因。
+ */
+function estimateMaxTokens(count, modelId, floor) {
+  const n = Math.max(1, Number(count) || 8);
+  let budget = TOKENS_JSON_OVERHEAD + TOKENS_PER_IDEA * n;
+  if (isReasoningModel(modelId)) budget += TOKENS_REASONING_RESERVE;
+  budget = Math.max(budget, Number(floor) || 0);
+  // 上限防止向不支持大输出的端点要一个被拒的数字
+  return Math.min(Math.max(budget, 2048), 32768);
 }
 
 /** /models 常混入 embedding、reranker、图片、语音和视频模型，不能放进文本聊天下拉框。 */
@@ -330,6 +503,7 @@ function createIdeator(cfg) {
     temperature: null,
     jsonMode: false,
   }, cfg || {});
+  c.rawBaseUrl = (cfg && cfg.baseUrl != null) ? String(cfg.baseUrl).trim() : '';
   c.baseUrl = normalizeBaseUrl(c.baseUrl);
   const adapter = resolveAdapter(c.protocol);
   const doFetch = c.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
@@ -390,14 +564,20 @@ function createIdeator(cfg) {
     return e;
   }
 
+  /** 按相对路径请求（相对于已配置的 baseUrl）。 */
   async function request(path, init, timeoutMs, action) {
     if (!c.baseUrl || !doFetch) throw new Error('缺少 Base URL 或当前环境没有 fetch');
+    return requestUrl(endpoint(c.baseUrl, path), init, timeoutMs, action);
+  }
+
+  /** 按完整 URL 请求：模型列表探测需要逐个试不同的 API 根地址。 */
+  async function requestUrl(url, init, timeoutMs, action) {
+    if (!doFetch) throw new Error('当前环境没有 fetch');
     if (abortedByUser) {
       const e = new Error((action || '请求') + '已中止');
       e.kind = 'aborted';
       throw e;
     }
-    const url = endpoint(c.baseUrl, path);
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     let timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs || c.timeoutMs) : null;
     const stopTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
@@ -474,6 +654,11 @@ function createIdeator(cfg) {
       return value.map(part => {
         if (typeof part === 'string') return part;
         if (!part || typeof part !== 'object') return '';
+        // 思维链分片不是正文（Anthropic thinking block / Gemini thought part /
+        // Mistral content[].thinking），拼进去就会把思维链当成答案。
+        if (part.thought === true || part.thinking ||
+            part.type === 'thinking' || part.type === 'redacted_thinking' ||
+            part.type === 'reasoning') return '';
         if (typeof part.text === 'string') return part.text;
         if (part.text && typeof part.text.value === 'string') return part.text.value;
         if (typeof part.output_text === 'string') return part.output_text;
@@ -522,7 +707,10 @@ function createIdeator(cfg) {
     // 而不是“这不是文本模型”。按证据分开裁决，别给出误导性诊断。
     let err;
     if (hasReasoning) {
-      err = new Error('模型只返回了思维链（reasoning_content），正文 content 为空；请换成非推理模型再试');
+      // 这不是「模型不能用」，而是输出预算全被思维链吃掉了。
+      // 标成可重试，上层会加大预算再试一次。
+      err = new Error('输出预算全部被思维链占用（已收到 ' + reasoning.trim().length +
+        ' 字思维链），正文 content 为空；系统将加大输出预算重试');
       err.kind = 'reasoning_only';
     } else {
       err = new Error('接口返回 200，但缺少可识别的文本内容；已检查 message.content、choices.text、output_text 和 output');
@@ -572,28 +760,54 @@ function createIdeator(cfg) {
       e.kind = 'unsupported';
       throw e;
     }
-    const r = await request(modelsPath, { method: 'GET' }, 15000, '获取模型列表');
-    const d = r.data;
-    // Gemini 返回 { models: [{ name: 'models/gemini-x', ... }] }，
-    // Anthropic 返回 { data: [{ id, display_name }] }，OpenAI 返回 { data: [{ id }] }。
-    const rawList = Array.isArray(d) ? d : (d && (d.data || d.models)) || [];
-    if (!Array.isArray(rawList)) {
-      const e = new Error('获取模型列表失败：返回数据缺少 data/models 数组');
-      e.kind = 'invalid_response';
-      throw e;
+    // 用户常只填 https://api.x.com（不带 /v1），此时 /models 必然 404。
+    // 纯前端没有后端替用户试错，所以这里依次探测候选根地址。
+    const roots = candidateApiRoots(c.rawBaseUrl != null ? c.rawBaseUrl : c.baseUrl);
+    const tried = [];
+    let lastErr = null;
+    for (const root of (roots.length ? roots : [c.baseUrl])) {
+      const url = root + '/' + modelsPath.replace(/^\/+/, '');
+      tried.push(url);
+      let r;
+      try {
+        r = await requestUrl(url, { method: 'GET' }, 15000, '获取模型列表');
+      } catch (e) {
+        lastErr = e;
+        // 只有「这个地址不对」才值得换下一个候选；鉴权失败换地址也没用。
+        if (e && (e.kind === 'auth' || e.kind === 'rate_limit')) throw e;
+        continue;
+      }
+      const d = r.data;
+      // Gemini 返回 { models: [{ name: 'models/gemini-x' }] }，
+      // Anthropic/OpenAI 返回 { data: [{ id }] }，也有网关直接返回裸数组。
+      const rawList = Array.isArray(d) ? d : (d && (d.data || d.models)) || [];
+      if (!Array.isArray(rawList) || !rawList.length) {
+        lastErr = new Error('获取模型列表失败：' + url + ' 返回数据缺少 data/models 数组');
+        lastErr.kind = 'invalid_response';
+        continue;
+      }
+      const models = [];
+      const seen = new Set();
+      for (const item of rawList) {
+        let id = typeof item === 'string' ? item : item && (item.id || item.name);
+        if (typeof id !== 'string' || !id.trim()) continue;
+        id = id.replace(/^models\//, '');   // Gemini 的 name 带 models/ 前缀
+        if (seen.has(id) || !isLikelyChatModel(item, id)) continue;
+        seen.add(id);
+        models.push(id);
+      }
+      return { ok: true, models, total: models.length, rawTotal: rawList.length,
+        url: r.url, apiRoot: root };
     }
-    const models = [];
-    const seen = new Set();
-    for (const item of rawList) {
-      let id = typeof item === 'string' ? item : item && (item.id || item.name);
-      if (typeof id !== 'string' || !id.trim()) continue;
-      // Gemini 的 name 带 models/ 前缀，要剔掉才能直接当模型名用
-      id = id.replace(/^models\//, '');
-      if (seen.has(id) || !isLikelyChatModel(item, id)) continue;
-      seen.add(id);
-      models.push(id);
+    if (lastErr) {
+      lastErr.message += tried.length > 1
+        ? '；已依次尝试 ' + tried.join(' 和 ') + '，均未取到列表。可在地址结尾加 # 强制使用原样地址（如 https://host/api#），或直接手填模型名。'
+        : '；可在地址结尾加 # 强制使用原样地址，或直接手填模型名。';
+      throw lastErr;
     }
-    return { ok: true, models, total: models.length, rawTotal: rawList.length, url: r.url };
+    const e = new Error('获取模型列表失败：没有可用的 Base URL');
+    e.kind = 'not_configured';
+    throw e;
   }
 
   /**
@@ -712,7 +926,11 @@ function createIdeator(cfg) {
     }
     // Anthropic / Claude
     if (data.delta && typeof data.delta.text === 'string') return data.delta.text;
-    if (data.delta && typeof data.delta.thinking === 'string') return '';
+    // Claude 的 thinking / 签名 block 不是答案（openai.js:3133）
+    if (data.delta && (typeof data.delta.thinking === 'string' ||
+        typeof data.delta.signature === 'string')) return '';
+    if (data.content_block && (data.content_block.type === 'thinking' ||
+        data.content_block.type === 'redacted_thinking')) return '';
     // Gemini candidates[].content.parts[].text（跳过 thought 标记的 reasoning）
     if (Array.isArray(data.candidates)) {
       const parts = data.candidates[0] && data.candidates[0].content &&
@@ -726,14 +944,25 @@ function createIdeator(cfg) {
     const choice = data.choices && data.choices[0];
     if (choice) {
       const delta = choice.delta || {};
+      // 思维链字段一律不进正文（DeepSeek/xAI: reasoning_content；OpenRouter: reasoning）。
+      // 不能因为只有思维链就返回它，否则思维链会被当成答案。
       if (typeof delta.content === 'string') return delta.content;
       if (typeof delta.text === 'string') return delta.text;
       if (Array.isArray(delta.content)) {
-        return delta.content.map(p => (p && (p.text || '')) || '').join('');
+        // Mistral 把 thinking 段和正文混在同一个数组里（openai.js:3206），
+        // 不过滤就会把思维链拼进正文。
+        return delta.content
+          .filter(p => p && !p.thinking && !p.thought && p.type !== 'thinking')
+          .map(p => (p && (p.text || '')) || '').join('');
       }
       // 某些兼容层把最终 message 放进 chunk
       const msg = choice.message || {};
       if (typeof msg.content === 'string') return msg.content;
+      if (Array.isArray(msg.content)) {
+        return msg.content
+          .filter(p => p && !p.thinking && !p.thought && p.type !== 'thinking')
+          .map(p => (p && (p.text || '')) || '').join('');
+      }
     }
     // llama.cpp / 本地推理裸文本
     if (typeof data.content === 'string') return data.content;
@@ -1044,10 +1273,18 @@ function createIdeator(cfg) {
 
   /** 容错解析：支持 markdown、思考块、BOM、尾逗号和 JSON 前后解释文字。 */
   function parseIdeas(txt) {
-    let s = String(txt).replace(/^\uFEFF/, '').trim();
-    // 部分推理模型把思考过程塞进 content；先移除完整 think/analysis/reasoning 块。
-    s = s.replace(/<(think|analysis|reasoning)>[\s\S]*?<\/\1>/gi, '').trim();
-    s = s.replace(/^```(?:json|javascript|js)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    // 先把思维链剥掉（包含只有闭合标签、未闭合、漏写闭合标签三种真实流式形态）
+    const payload = extractPayloadText(txt);
+    let s = payload.text;
+    // 剥离后完全没正文：模型只吐了思维链，不能当成格式错误，
+    // 要报成可重试的截断（上层会加大预算重试）。
+    if (!s && payload.reasoning) {
+      const err = new Error('模型只输出了思维链就耗尽输出预算，正文 JSON 尚未开始' +
+        (payload.unclosed ? '（思维链未结束）' : '') + '；系统将加大输出预算重试');
+      err.kind = 'truncated_json';
+      err.reasoningOnly = true;
+      throw err;
+    }
     let d = tryParseJson(s);
     // 整体直接解析失败时，先判定是不是被截断。
     // 被截断就不得再从残片里“捣”出部分题目，否则会把 6 题静默缩成 1 题。
@@ -1159,7 +1396,7 @@ function createIdeator(cfg) {
     throw e;
   }
 
-  /** 主入口：根据学生情况生成候选题目；格式失败时自动紧凑重试一次。 */
+  /** 主入口：根据学生情况生成候选题目；截断时递增预算重试。 */
   async function generate(profile) {
     if (!configured()) {
       const e = new Error('未配置大模型：需要填写完整的 Base URL、API Key 与 Model');
@@ -1168,54 +1405,110 @@ function createIdeator(cfg) {
     }
     abortedByUser = false;
     const userPrompt = buildUserPrompt(profile);
+    const wanted = Math.max(1, Number(profile && profile.count) || 8);
+    // 按题数与模型类型算预算；推理模型额外留思维链额度。
+    const budget0 = estimateMaxTokens(wanted, c.model, c.maxTokens);
+    const reasoning = isReasoningModel(c.model);
     const standard = [
       { role: 'system', content: IDEATE_SYSTEM_PROMPT },
       { role: 'user', content: userPrompt },
     ];
+    const RECOVERABLE = ['truncated', 'truncated_json', 'invalid_model_json', 'reasoning_only'];
+
+    const trySalvage = (e) => {
+      if (!e || !e.partialText) return null;
+      try {
+        const salvaged = parseIdeas(e.partialText);
+        return salvaged.length ? salvaged : null;
+      } catch (ignored) { return null; }
+    };
+
     let chatResult;
     throwIfAborted('生成选题');
     try {
-      chatResult = await chat(standard);
+      chatResult = await chat(standard, { maxTokens: budget0 });
       throwIfAborted('生成选题');
       const ideas = parseIdeas(chatResult.text);
-      return { ok: true, ideas, raw: chatResult.text, model: c.model, via: chatResult.via };
+      const clean = extractPayloadText(chatResult.text);
+      return { ok: true, ideas, raw: clean.text || chatResult.text,
+        reasoning: clean.reasoning || undefined, model: c.model, via: chatResult.via };
     } catch (e) {
-      const recoverable = e && ['truncated', 'truncated_json', 'invalid_model_json'].includes(e.kind);
-      if (!recoverable || abortedByUser) throw e;
+      if (!e || !RECOVERABLE.includes(e.kind) || abortedByUser) throw e;
       // 截断信号只是「怀疑」。先验证已收到的正文能否解析成合法候选，
       // 能解析就直接用，不为一个不确定的 finish_reason 白花一次付费调用。
-      if (e.kind === 'truncated' && e.partialText) {
-        try {
-          const salvaged = parseIdeas(e.partialText);
-          if (salvaged.length) {
-            return { ok: true, ideas: salvaged, raw: e.partialText, model: c.model,
-              salvagedFromTruncation: true };
-          }
-        } catch (ignored) { /* 确实不完整，转入紧凑重试 */ }
+      const salvaged = trySalvage(e);
+      if (salvaged) {
+        return { ok: true, ideas: salvaged,
+          raw: extractPayloadText(e.partialText).text || e.partialText, model: c.model,
+          salvagedFromTruncation: true };
       }
     }
 
-    const strictSystem = IDEATE_SYSTEM_PROMPT + [
-      '',
-      '上一次回复未形成合法完整 JSON。请重新生成，不要续写上一次内容。',
-      '本次每个 rationale 和 onboarding 子字段最多 40 个汉字，JSON 使用单行紧凑格式。',
-      '禁止使用 markdown、注释、尾随逗号或 JSON 之外的任何文字。',
-    ].join('\n');
-    throwIfAborted('生成选题');
-    try {
-      chatResult = await chat([
-        { role: 'system', content: strictSystem },
-        { role: 'user', content: userPrompt },
-      ], { maxTokens: Math.max(4096, c.maxTokens || 0) });
+    /*
+     * 递增重试：旧逻辑用 Math.max(4096, c.maxTokens) 重试，预算根本没变，
+     * 思维链照样把正文挤掉，所以「已重试一次仍失败」是必然结果。
+     * 现在每轮同时：加大输出预算 + 压缩字数要求 +（末轮）减少题数。
+     */
+    const attempts = [
+      { budget: Math.min(Math.round(budget0 * 1.8), 32768), count: wanted },
+      { budget: Math.min(Math.round(budget0 * 2.6), 32768),
+        count: Math.max(3, Math.ceil(wanted / 2)) },
+    ];
+    let lastErr = null;
+    for (const a of attempts) {
       throwIfAborted('生成选题');
-      const ideas = parseIdeas(chatResult.text);
-      return { ok: true, ideas, raw: chatResult.text, model: c.model, recovered: true, via: chatResult.via };
-    } catch (e) {
-      if (e && ['truncated', 'truncated_json', 'invalid_model_json'].includes(e.kind)) {
-        e.message += '；已自动用紧凑 JSON 重试一次，仍失败。建议换用非推理模型或减少候选题数量';
+      const notes = [
+        '',
+        '上一次回复未形成合法完整 JSON。请重新生成，不要续写上一次内容。',
+        '本次每个 rationale 和 onboarding 子字段最多 40 个汉字，JSON 使用单行紧凑格式。',
+        '禁止使用 markdown、注释、尾随逗号或 JSON 之外的任何文字。',
+      ];
+      if (reasoning) {
+        // 推理模型会把额度花在思维链上，直接要求它压缩思考。
+        notes.push('请尽量缩短内部思考，直接输出最终 JSON；思考内容不计入交付结果。');
       }
-      throw e;
+      if (a.count < wanted) {
+        notes.push('本次只需输出 ' + a.count + ' 道题目，宁少勿缺，但必须是完整合法 JSON。');
+      }
+      const retryUser = a.count < wanted
+        ? buildUserPrompt(Object.assign({}, profile, { count: a.count }))
+        : userPrompt;
+      try {
+        chatResult = await chat([
+          { role: 'system', content: IDEATE_SYSTEM_PROMPT + notes.join('\n') },
+          { role: 'user', content: retryUser },
+        ], { maxTokens: a.budget });
+        throwIfAborted('生成选题');
+        const ideas = parseIdeas(chatResult.text);
+        const clean = extractPayloadText(chatResult.text);
+        return { ok: true, ideas, raw: clean.text || chatResult.text,
+          reasoning: clean.reasoning || undefined, model: c.model,
+          recovered: true, via: chatResult.via, retryBudget: a.budget,
+          reducedCount: a.count < wanted ? a.count : undefined };
+      } catch (e) {
+        lastErr = e;
+        if (abortedByUser || !e || !RECOVERABLE.includes(e.kind)) throw e;
+        const salvaged = trySalvage(e);
+        if (salvaged) {
+          return { ok: true, ideas: salvaged,
+            raw: extractPayloadText(e.partialText).text || e.partialText,
+            model: c.model, salvagedFromTruncation: true, recovered: true };
+        }
+      }
     }
+
+    if (lastErr) {
+      lastErr.message += '；已自动加大输出预算重试（' + budget0 + ' → ' +
+        attempts.map(a => a.budget).join(' / ') + ' token）并尝试减少题数，仍失败。' +
+        (reasoning
+          ? '当前模型「' + c.model + '」是推理模型，思维链会占用输出额度，' +
+            '建议换成同系非推理模型（例如把 deepseek-reasoner 换成 deepseek-chat）。'
+          : '建议减少候选题数，或换一个输出上限更大的模型。');
+      throw lastErr;
+    }
+    const e = new Error('生成选题失败：未获得可用结果');
+    e.kind = 'invalid_model_json';
+    throw e;
   }
 
   return {
@@ -1272,5 +1565,7 @@ if (typeof module !== 'undefined' && module.exports) {
     createIdeator, fallbackIdeas, IDEATE_SYSTEM_PROMPT, buildUserPrompt,
     PROVIDER_PRESETS, normalizeBaseUrl, endpoint, isLikelyChatModel,
     PROTOCOL_ADAPTERS, toAnthropicPayload, toGeminiPayload,
+    stripReasoning, extractPayloadText, isReasoningModel, estimateMaxTokens,
+    candidateApiRoots, isPinnedBaseUrl,
   };
 }

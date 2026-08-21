@@ -1822,6 +1822,7 @@ footer {
               </div>
             </div>
           </div>
+          <div id="modelNote" style="margin-top:8px;font-size:12.5px;color:var(--fg-muted)"></div>
           <div id="fetchModelsMsg" style="margin-top:10px;font-size:12.5px;color:var(--fg-muted)"></div>
         </div>
       </details>
@@ -2071,9 +2072,31 @@ function setBadge(state, text){
 }
 function refreshBadge(){
   const c = { baseUrl: $('baseUrl').value.trim(), apiKey: $('apiKey').value.trim(), model: $('model').value.trim() };
+  refreshModelNote(c.model);
   if (!c.baseUrl || !c.apiKey || !c.model) { setBadge('bad', '未填完'); return false; }
   setBadge('warn', '待检查');
   return true;
+}
+
+/**
+ * 推理模型会把输出额度花在思维链上，导致 JSON 正文被 length 截断。
+ * 提前告知并给出预算估算，比等它失败后报错有用。
+ */
+function refreshModelNote(model){
+  const box = $('modelNote');
+  if (!box) return;
+  const id = String(model || '').trim();
+  if (!id) { box.textContent = ''; return; }
+  const count = Number(($('count') && $('count').value) || 8) || 8;
+  const budget = estimateMaxTokens(count, id, 0);
+  if (isReasoningModel(id)) {
+    box.innerHTML = '<span style="color:var(--warn-fg)">⚠ 「' + esc(id) +
+      '」是推理模型，思维链会占用输出额度</span>；已自动为 ' + count +
+      ' 道题申请 ' + budget + ' token（含思维链预留）。若仍被截断，换同系非推理模型更稳。';
+  } else {
+    box.innerHTML = '<span class="hint">已为 ' + count + ' 道题自动申请 ' + budget +
+      ' token 输出预算。</span>';
+  }
 }
 
 presetSel.addEventListener('change', () => {
@@ -2127,7 +2150,10 @@ function saveCfg(normalize){
     version: CFG_VERSION,
     preset: presetSel.value,
     protocol: protocolSel.value,
-    baseUrl: shouldNormalize ? normalizeBaseUrl(rawBaseUrl) : rawBaseUrl,
+    // 结尾 `#` 是用户显式锁定地址的信号（对齐 Cherry Studio 约定），
+    // 规范化会把它吃掉，导致非 /v1 网关（如 Open-WebUI）又被自动补路径。
+    baseUrl: (shouldNormalize && !rawBaseUrl.endsWith('#'))
+      ? normalizeBaseUrl(rawBaseUrl) : rawBaseUrl,
     apiKey: $('apiKey').value.trim(),
     model: $('model').value.trim()
   };
@@ -2139,6 +2165,8 @@ function saveCfg(normalize){
 ['baseUrl', 'apiKey', 'model'].forEach(id => {
   $(id).addEventListener('input', () => { saveCfg(false); refreshBadge(); });
 });
+// 题数变化会改变输出预算，提示要跟着变
+$('count').addEventListener('input', () => refreshModelNote($('model').value));
 $('baseUrl').addEventListener('blur', () => saveCfg(true));
 
 $('keyToggle').addEventListener('click', () => {

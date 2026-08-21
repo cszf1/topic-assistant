@@ -5,8 +5,11 @@
 const path = require('path');
 const { ANGLE_DICT } = require(path.join(__dirname, '..', 'web', 'angles.js'));
 const { createIdeator, fallbackIdeas, IDEATE_SYSTEM_PROMPT, buildUserPrompt,
-  PROVIDER_PRESETS, normalizeBaseUrl, endpoint, isLikelyChatModel } =
+  PROVIDER_PRESETS, normalizeBaseUrl, endpoint, isLikelyChatModel,
+  stripReasoning, extractPayloadText, isReasoningModel, estimateMaxTokens } =
   require(path.join(__dirname, '..', 'web', 'ideate.js'));
+// 第 12 节对抗场景用到模块级工具函数（用 M 命名空间避免与局部 ide 实例重名）
+const M = { stripReasoning, extractPayloadText, isReasoningModel, estimateMaxTokens };
 
 let pass = 0, fail = 0;
 const ck = (n, c, e) => { if (c) { pass++; console.log('  PASS  ' + n); }
@@ -327,7 +330,7 @@ function mockLLM() {
     fetchImpl: async (url, init) => {
       const body = JSON.parse(init.body);
       ck('o1 模型 max_tokens 重命名为 max_completion_tokens',
-        body.max_completion_tokens === 6144 && !('max_tokens' in body), JSON.stringify(body));
+        body.max_completion_tokens > 6144 && !('max_tokens' in body), JSON.stringify(body.max_completion_tokens));
       ck('o1 模型删除 temperature 参数', !('temperature' in body));
       ck('o1 模型 system 角色降级为 user',
         body.messages.every(m => m.role !== 'system'));
@@ -341,7 +344,8 @@ function mockLLM() {
     maxRetries: 0,
     fetchImpl: async (url, init) => {
       const body = JSON.parse(init.body);
-      ck('普通模型保留 max_tokens 字段', body.max_tokens === 6144 && !('max_completion_tokens' in body));
+      ck('普通模型保留 max_tokens 字段', body.max_tokens === 6144 && !('max_completion_tokens' in body),
+        String(body.max_tokens));
       return mockLLM();
     } });
   const normalResult = await normalBodyIde.generate(PROFILE);
@@ -825,6 +829,271 @@ function mockLLM() {
   const fallbackProto = createIdeator({ protocol: 'nope', apiKey: 'k',
     baseUrl: 'https://x/v1', model: 'm' });
   ck('未知协议安全回退到 openai-chat', fallbackProto.protocol === 'openai-chat');
+
+  hr('10. 思维链隔离与输出预算（真实故障回归）');
+
+  const cotJson = JSON.stringify({ ideas: [{
+    zh: '思维链隔离题', objectEn: 'retinal vessel segmentation', methodEn: 'few-shot learning',
+  }] });
+  function sseOnce(payload){
+    let sent = false;
+    return { ok: true, status: 200,
+      headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+      body: { getReader: () => ({
+        async read(){ if (sent) return { done: true }; sent = true;
+          return { done: false, value: new TextEncoder().encode(payload) }; },
+        releaseLock(){}, cancel(){},
+      }) } };
+  }
+  async function runContent(model, content){
+    const ide2 = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model, maxRetries: 0,
+      fetchImpl: async () => sseOnce(
+        'data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n' +
+        'data: [DONE]\n\n') });
+    return ide2.generate({ ...PROFILE, count: 1 });
+  }
+
+  // <think> 三种真实形态都不能把思维链当成答案
+  const cotCases = [
+    ['完整 think 块', '<think>我先分析学生条件，再逐一权衡</think>' + cotJson],
+    ['只有闭合标签（首块丢失）', '我先分析学生条件，再逐一权衡</think>' + cotJson],
+    ['thinking 标签', '<thinking>内部推演</thinking>' + cotJson],
+    ['大写 THINK', '<THINK>内部推演</THINK>' + cotJson],
+  ];
+  for (const [name, content] of cotCases) {
+    const r = await runContent('qwq-32b', content);
+    ck('思维链剥离: ' + name,
+      r.ok && !/分析学生条件|内部推演/.test(r.raw) && r.ideas[0].zh === '思维链隔离题',
+      (r.raw || '').slice(0, 60));
+  }
+
+  // 模型漏写闭合标签时，正文 JSON 仍要被抢救出来
+  const unclosed = await runContent('qwq-32b', '<think>思考中但忘了闭合 ' + cotJson);
+  ck('思维链未闭合时仍抢救出正文 JSON',
+     unclosed.ok && unclosed.ideas[0].zh === '思维链隔离题' && !/思考中/.test(unclosed.raw),
+     (unclosed.raw || '').slice(0, 60));
+
+  // reasoning_content 独立字段不得混入正文
+  const rcIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'deepseek-reasoner',
+    maxRetries: 0,
+    fetchImpl: async () => sseOnce(
+      'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: '长长的思维链推演' } }] }) + '\n\n' +
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: cotJson } }] }) + '\n\n' +
+      'data: [DONE]\n\n') });
+  const rcRes = await rcIde.generate({ ...PROFILE, count: 1 });
+  ck('reasoning_content 不混入正文',
+     rcRes.ok && !/思维链推演/.test(rcRes.raw), (rcRes.raw || '').slice(0, 60));
+
+  // Mistral 风格 content 数组里混着 thinking 段
+  const mistralIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'magistral-small',
+    maxRetries: 0,
+    fetchImpl: async () => sseOnce(
+      'data: ' + JSON.stringify({ choices: [{ delta: { content: [
+        { type: 'thinking', text: '内部思考不可外泄' },
+        { type: 'text', text: cotJson },
+      ] } }] }) + '\n\n' + 'data: [DONE]\n\n') });
+  const mistralRes = await mistralIde.generate({ ...PROFILE, count: 1 });
+  ck('Mistral content 数组中的 thinking 段被过滤',
+     mistralRes.ok && !/不可外泄/.test(mistralRes.raw), (mistralRes.raw || '').slice(0, 60));
+
+  // 输出预算：推理模型必须比同题数的非推理模型拿到更多预算
+  async function budgetOf(model, count){
+    let seen = null;
+    const ide3 = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model, maxRetries: 0,
+      fetchImpl: async (url, init) => {
+        const b = JSON.parse(init.body);
+        seen = b.max_tokens ?? b.max_completion_tokens;
+        return sseOnce('data: ' + JSON.stringify({ choices: [{ delta: { content: cotJson } }] }) +
+          '\n\ndata: [DONE]\n\n');
+      } });
+    await ide3.generate({ ...PROFILE, count });
+    return seen;
+  }
+  const bPlain8 = await budgetOf('deepseek-chat', 8);
+  const bReason8 = await budgetOf('deepseek-reasoner', 8);
+  const bPlain2 = await budgetOf('deepseek-chat', 2);
+  ck('推理模型获得更大输出预算', bReason8 > bPlain8, bPlain8 + ' -> ' + bReason8);
+  ck('题数越多预算越大', bPlain8 > bPlain2, bPlain2 + ' -> ' + bPlain8);
+  ck('非推理模型不白付思维链预算', bReason8 - bPlain8 >= 4096, String(bReason8 - bPlain8));
+
+  // 关键回归：length 截断后重试必须真的加大预算，而不是原样重发
+  const budgets = [];
+  const truncIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1',
+    model: 'deepseek-reasoner', maxRetries: 0,
+    fetchImpl: async (url, init) => {
+      budgets.push(JSON.parse(init.body).max_tokens);
+      if (budgets.length < 3) {
+        return sseOnce('data: ' + JSON.stringify({ choices: [{
+          delta: { content: '{"ideas":[{"zh":"半' }, finish_reason: 'length' }] }) +
+          '\n\ndata: [DONE]\n\n');
+      }
+      return sseOnce('data: ' + JSON.stringify({ choices: [{ delta: { content: cotJson } }] }) +
+        '\n\ndata: [DONE]\n\n');
+    } });
+  const truncRes = await truncIde.generate({ ...PROFILE, count: 8 });
+  ck('截断重试逐轮加大预算（不是原样重发）',
+     truncRes.ok && budgets.length === 3 &&
+     budgets[1] > budgets[0] && budgets[2] > budgets[1],
+     budgets.join(' -> '));
+
+  // 只有思维链、正文为空：应加大预算重试而不是直接判死
+  let roCalls = 0;
+  const roIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'deepseek-reasoner',
+    maxRetries: 0, stream: false,
+    fetchImpl: async () => {
+      roCalls++;
+      if (roCalls === 1) {
+        return { ok: true, status: 200, headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify({ choices: [{ message: {
+            content: '', reasoning_content: '我想了很久但没输出正文' } }] }) };
+      }
+      return { ok: true, status: 200, headers: { get: () => 'application/json' },
+        text: async () => JSON.stringify({ choices: [{ message: { content: cotJson } }] }) };
+    } });
+  const roRes = await roIde.generate({ ...PROFILE, count: 1 });
+  ck('只返回思维链时加大预算重试而非直接失败',
+     roRes.ok && roCalls === 2 && roRes.recovered === true, 'calls=' + roCalls);
+
+  hr('11. 模型列表探测与 baseUrl 约定');
+
+  const jsonRes = payload => ({ ok: true, status: 200,
+    headers: { get: () => 'application/json' }, text: async () => JSON.stringify(payload) });
+  const notFound = { ok: false, status: 404,
+    headers: { get: () => 'text/plain' }, text: async () => 'not found' };
+
+  // 用户只填 https://api.x.com（不带 /v1）时必须自动探测 /v1/models
+  const probed = [];
+  const probeIde = createIdeator({ apiKey: 'k', baseUrl: 'https://api.x.com', model: 'm',
+    fetchImpl: async (url) => {
+      probed.push(url);
+      return url.endsWith('/v1/models')
+        ? jsonRes({ data: [{ id: 'gpt-4o-mini' }, { id: 'text-embedding-3-small' }] })
+        : notFound;
+    } });
+  const probeRes = await probeIde.fetchModels();
+  ck('缺少 /v1 时自动探测补全',
+     probeRes.ok && probeRes.apiRoot === 'https://api.x.com/v1' &&
+     probed.length === 2 && probed[0].endsWith('/models'), probed.join(' , '));
+  ck('模型列表过滤 embedding 条目',
+     probeRes.models.length === 1 && probeRes.models[0] === 'gpt-4o-mini',
+     JSON.stringify(probeRes.models));
+
+  // # 结尾锁定地址：不得再自动补 /v1（Open-WebUI 等非 /v1 网关）
+  const pinned = [];
+  const pinIde = createIdeator({ apiKey: 'k', baseUrl: 'http://host:3000/api#', model: 'm',
+    fetchImpl: async (url) => { pinned.push(url); return jsonRes({ data: [{ id: 'llama3' }] }); } });
+  const pinRes = await pinIde.fetchModels();
+  ck('# 结尾强制原样地址，不补 /v1',
+     pinRes.ok && pinned.length === 1 && pinned[0] === 'http://host:3000/api/models',
+     pinned.join(' , '));
+
+  // 裸数组与 Gemini models/ 前缀都要能吃
+  const bareIde = createIdeator({ apiKey: 'k', baseUrl: 'https://api.x.com/v1', model: 'm',
+    fetchImpl: async () => jsonRes(['model-a', 'model-b']) });
+  const bareRes = await bareIde.fetchModels();
+  ck('裸数组模型列表可解析', bareRes.ok && bareRes.models.length === 2, JSON.stringify(bareRes.models));
+
+  const gemListIde = createIdeator({ protocol: 'gemini-generateContent', apiKey: 'k',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'm',
+    fetchImpl: async () => jsonRes({ models: [{ name: 'models/gemini-2.5-pro' }] }) });
+  const gemListRes = await gemListIde.fetchModels();
+  ck('Gemini models/ 前缀被剥离',
+     gemListRes.ok && gemListRes.models[0] === 'gemini-2.5-pro', JSON.stringify(gemListRes.models));
+
+  // 鉴权失败不该换地址重试（换了也没用，只会多打一次）
+  let authTries = 0;
+  const authIde = createIdeator({ apiKey: 'bad', baseUrl: 'https://api.x.com', model: 'm',
+    fetchImpl: async () => { authTries++;
+      return { ok: false, status: 401, headers: { get: () => 'text/plain' },
+        text: async () => 'invalid key' }; } });
+  let authErr = null;
+  try { await authIde.fetchModels(); } catch (e) { authErr = e; }
+  ck('鉴权失败不做多地址重试',
+     !!authErr && authErr.kind === 'auth' && authTries === 1, 'tries=' + authTries);
+
+  // 全部候选失败时，报错要给出可操作提示
+  const deadIde = createIdeator({ apiKey: 'k', baseUrl: 'https://api.x.com', model: 'm',
+    fetchImpl: async () => notFound });
+  let deadErr = null;
+  try { await deadIde.fetchModels(); } catch (e) { deadErr = e; }
+  ck('全部探测失败时提示 # 与手填模型',
+     !!deadErr && /#/.test(deadErr.message) && /手填/.test(deadErr.message),
+     (deadErr && deadErr.message || '').slice(0, 120));
+
+  // 聊天请求不受探测影响：仍用用户配置的根地址
+  let chatUrl = null;
+  const chatRootIde = createIdeator({ apiKey: 'k', baseUrl: 'https://api.x.com/v1#', model: 'm',
+    maxRetries: 0, stream: false,
+    fetchImpl: async (url) => { chatUrl = url;
+      return jsonRes({ choices: [{ message: { content: JSON.stringify({ ideas: [{
+        zh: 'A', objectEn: 'x', methodEn: 'y' }] }) } }] }); } });
+  const chatRootRes = await chatRootIde.generate({ ...PROFILE, count: 1 });
+  ck('# 锁定地址下聊天端点仍正确',
+     chatRootRes.ok && chatUrl === 'https://api.x.com/v1/chat/completions', String(chatUrl));
+
+  hr('12. 对抗场景（思维链标签字面量与畸形输入）');
+
+  // 题目正文本身含 </think> 字面量：不得被当成思维链边界而切坏 JSON
+  const literalJson = JSON.stringify({ ideas: [{
+    zh: '基于</think>标签解析的推理链评测', objectEn: 'chain of thought parsing',
+    methodEn: 'prompt engineering' }] });
+  const litOut = M.extractPayloadText(literalJson);
+  let litParsed = null;
+  try { litParsed = JSON.parse(litOut.text); } catch (e) {}
+  ck('正文含 </think> 字面量时 JSON 不被破坏',
+     !!litParsed && litParsed.ideas[0].zh.indexOf('</think>') >= 0,
+     litOut.text.slice(0, 60));
+
+  const litWithCot = M.extractPayloadText('<think>先想想</think>' + literalJson);
+  let litParsed2 = null;
+  try { litParsed2 = JSON.parse(litWithCot.text); } catch (e) {}
+  ck('真思维链 + 正文字面量可同时正确处理',
+     !!litParsed2 && litParsed2.ideas[0].methodEn === 'prompt engineering',
+     litWithCot.text.slice(0, 60));
+
+  // 闭合思维链里的草稿 JSON 不能顶替正文答案
+  const draftOut = M.extractPayloadText(
+    '<think>草拟：{"ideas":[{"zh":"草稿","objectEn":"wrong"}]} 不对，重写</think>' +
+    JSON.stringify({ ideas: [{ zh: '正式题目', objectEn: 'right', methodEn: 'm' }] }));
+  let draftParsed = null;
+  try { draftParsed = JSON.parse(draftOut.text); } catch (e) {}
+  ck('思维链内草稿 JSON 不顶替正文',
+     !!draftParsed && draftParsed.ideas[0].zh === '正式题目', draftOut.text.slice(0, 50));
+
+  // 未闭合时从思维链抢救出的 JSON 必须打标记，便于上层区分可信度
+  const salvOut = M.extractPayloadText(
+    '<think>草拟：' + JSON.stringify({ ideas: [{ zh: '草稿题', objectEn: 'd', methodEn: 'm' }] }));
+  ck('未闭合抢救打 salvagedFromReasoning 标记',
+     salvOut.salvagedFromReasoning === true, String(salvOut.salvagedFromReasoning));
+
+  // 畸形输入不得卡死或抛异常
+  const evilInputs = [
+    ['大量未闭合开标签', new Array(400).join('<think>') + '{"ideas":[]}'],
+    ['大量闭合标签', new Array(400).join('</think>') + '{"ideas":[]}'],
+    ['交错嵌套', '<think><thinking><think>x</think></thinking>{"ideas":[]}'],
+    ['空标签对', '<think></think>{"ideas":[]}'],
+    ['超长无标签文本', new Array(50000).join('x')],
+  ];
+  let evilOk = true;
+  let evilMs = 0;
+  for (const pair of evilInputs) {
+    const t0 = Date.now();
+    try { M.stripReasoning(pair[1]); } catch (e) { evilOk = false; }
+    evilMs += Date.now() - t0;
+  }
+  ck('畸形思维链输入不卡死不抛错', evilOk && evilMs < 3000, evilMs + 'ms');
+
+  // 预算边界
+  ck('预算上限被 clamp 到 32768',
+     M.estimateMaxTokens(999, 'deepseek-chat', 0) === 32768,
+     String(M.estimateMaxTokens(999, 'deepseek-chat', 0)));
+  ck('题数非法时预算不产生 NaN',
+     Number.isFinite(M.estimateMaxTokens(0, 'm', 0)) &&
+     Number.isFinite(M.estimateMaxTokens(undefined, 'm', 0)));
+  ck('non-reasoning 变体不被误判为推理模型',
+     M.isReasoningModel('grok-4-fast-non-reasoning') === false &&
+     M.isReasoningModel('qwen3-32b-no-think') === false &&
+     M.isReasoningModel('deepseek-reasoner') === true);
 
   hr('结果: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
