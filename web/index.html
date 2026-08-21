@@ -1791,6 +1791,11 @@ footer {
         <div class="cfgbody">
           <div class="grid">
             <div>
+              <label>接口协议</label>
+              <select id="protocolSelect"></select>
+              <div id="protocolNote" class="hint" style="margin:6px 0 0"></div>
+            </div>
+            <div>
               <label>服务商预设（快捷切换）</label>
               <select id="presetSelect"></select>
             </div>
@@ -2041,7 +2046,7 @@ PROVIDER_PRESETS.forEach(p => {
 });
 
 const CFG_KEY = 'xt_llm_cfg';
-const CFG_VERSION = 2;
+const CFG_VERSION = 3;
 let savedCfg = {};
 try { savedCfg = JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch(e){}
 
@@ -2083,12 +2088,45 @@ presetSel.addEventListener('change', () => {
     : '';
 });
 
+/* ---------- 接口协议选择（多协议适配） ---------- */
+const protocolSel = $('protocolSelect');
+Object.keys(PROTOCOL_ADAPTERS).forEach(id => {
+  const opt = document.createElement('option');
+  opt.value = id;
+  opt.textContent = PROTOCOL_ADAPTERS[id].label;
+  protocolSel.appendChild(opt);
+});
+protocolSel.value = (savedCfg.protocol && PROTOCOL_ADAPTERS[savedCfg.protocol])
+  ? savedCfg.protocol : 'openai-chat';
+
+function refreshProtocolNote(){
+  const a = PROTOCOL_ADAPTERS[protocolSel.value];
+  const box = $('protocolNote');
+  if (!a) { box.textContent = ''; return; }
+  // 如实告知浏览器直连限制，而不是等它失败后报成“模型返回格式错误”
+  if (a.browserDirect === false) {
+    box.innerHTML = '<span style="color:var(--warn-fg)">⚠ ' +
+      esc(a.browserNote || '该协议不支持浏览器直连，需通过后端代理。') + '</span>';
+  } else if (a.browserNote) {
+    box.innerHTML = '<span style="color:var(--fg-muted)">' + esc(a.browserNote) + '</span>';
+  } else {
+    box.textContent = '';
+  }
+}
+refreshProtocolNote();
+protocolSel.addEventListener('change', () => {
+  saveCfg();
+  refreshProtocolNote();
+  refreshBadge();
+});
+
 function saveCfg(normalize){
   const shouldNormalize = normalize !== false;
   const rawBaseUrl = $('baseUrl').value.trim();
   const c = {
     version: CFG_VERSION,
     preset: presetSel.value,
+    protocol: protocolSel.value,
     baseUrl: shouldNormalize ? normalizeBaseUrl(rawBaseUrl) : rawBaseUrl,
     apiKey: $('apiKey').value.trim(),
     model: $('model').value.trim()

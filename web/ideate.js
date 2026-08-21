@@ -22,6 +22,201 @@ const PROVIDER_PRESETS = [
   { id: 'custom', name: '自定义 OpenAI 兼容接口', baseUrl: '', defaultModel: '', docs: '', verifiedAt: null },
 ];
 
+/**
+ * 协议适配层（参考 SillyTavern 的 provider 分层，但收缩到单文件可维护规模）。
+ * 每个 adapter 只负责「怎么发」与「怎么读」，不涉及重试/截断/抢救策略。
+ * 接口契约：
+ *   chatPath(model, stream) -> 相对路径
+ *   modelsPath()           -> 模型列表相对路径（null 表示不支持枚举）
+ *   authHeaders(cfg)       -> 鉴权头
+ *   buildBody(messages, o) -> 请求体（o: { model, maxTokens, temperature, stream, jsonMode }）
+ *   extractText(data)      -> 非流式正文
+ *   streamDelta(chunk)     -> 流式增量正文
+ *   finishReason(chunk)    -> 结束原因
+ *   browserDirect          -> 是否能在纯浏览器直连（否则需 Edge Function 代理）
+ */
+
+/** OpenAI messages -> Anthropic（system 提到顶层） */
+function toAnthropicPayload(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const systemText = list.filter(m => m && m.role === 'system')
+    .map(m => String(m.content || '')).join('\n\n');
+  const rest = list.filter(m => m && m.role !== 'system').map(m => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: String(m.content || ''),
+  }));
+  return { system: systemText || undefined, messages: rest };
+}
+
+/** OpenAI messages -> Gemini（contents + systemInstruction，助手角色叫 model） */
+function toGeminiPayload(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const systemText = list.filter(m => m && m.role === 'system')
+    .map(m => String(m.content || '')).join('\n\n');
+  const contents = list.filter(m => m && m.role !== 'system').map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: String(m.content || '') }],
+  }));
+  const payload = { contents };
+  if (systemText) payload.systemInstruction = { parts: [{ text: systemText }] };
+  return payload;
+}
+
+const PROTOCOL_ADAPTERS = {
+  'openai-chat': {
+    id: 'openai-chat',
+    label: 'OpenAI 兼容 (chat/completions)',
+    browserDirect: true,
+    chatPath: () => 'chat/completions',
+    modelsPath: () => 'models',
+    authHeaders: cfg => (cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {}),
+    buildBody: (messages, o) => {
+      const body = { model: o.model, messages, stream: !!o.stream };
+      if (Number.isFinite(o.maxTokens) && o.maxTokens > 0) body.max_tokens = Math.floor(o.maxTokens);
+      if (Number.isFinite(o.temperature)) body.temperature = o.temperature;
+      if (o.jsonMode === true) body.response_format = { type: 'json_object' };
+      const model = String(o.model || '').toLowerCase();
+      // o1/o3/o4/gpt-5 系列：改名并删采样参数（SillyTavern openai.js:2982 同模式）
+      if (/(?:^|\/)(o1|o3|o4|gpt-5)(?:[.\-]|$)/.test(model)) {
+        if (body.max_tokens != null) {
+          body.max_completion_tokens = body.max_tokens;
+          delete body.max_tokens;
+        }
+        delete body.temperature;
+        if (/(?:^|\/)o1(?:[.\-]|$)/.test(model)) {
+          body.messages = body.messages.map(m =>
+            m && m.role === 'system' ? Object.assign({}, m, { role: 'user' }) : m);
+        }
+      }
+      return body;
+    },
+    extractText: null,   // 用通用形状嗅探
+    streamDelta: null,   // 用通用形状嗅探
+    finishReason: null,
+  },
+
+  'openai-responses': {
+    id: 'openai-responses',
+    label: 'OpenAI Responses (/responses)',
+    browserDirect: true,
+    chatPath: () => 'responses',
+    modelsPath: () => 'models',
+    authHeaders: cfg => (cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {}),
+    buildBody: (messages, o) => {
+      const body = {
+        model: o.model,
+        input: (Array.isArray(messages) ? messages : []).map(m => ({
+          role: m.role === 'system' ? 'developer' : m.role,
+          content: String(m.content || ''),
+        })),
+        stream: !!o.stream,
+      };
+      if (Number.isFinite(o.maxTokens) && o.maxTokens > 0) {
+        body.max_output_tokens = Math.floor(o.maxTokens);
+      }
+      return body;
+    },
+    extractText: null,
+    streamDelta: chunk => {
+      if (!chunk || typeof chunk !== 'object') return '';
+      if (typeof chunk.delta === 'string') return chunk.delta;
+      if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string') return chunk.delta;
+      return '';
+    },
+    finishReason: null,
+  },
+
+  'anthropic-messages': {
+    id: 'anthropic-messages',
+    label: 'Anthropic Messages (/v1/messages)',
+    // 官方允许浏览器直连，但必须显式开启并会暂露密钥，默认不推荐
+    browserDirect: false,
+    browserNote: 'Anthropic 需要 anthropic-dangerous-direct-browser-access 才能浏览器直连，' +
+      '且 API Key 会暴露给浏览器；建议改用 Edge Function 代理。',
+    chatPath: () => 'messages',
+    modelsPath: () => 'models',
+    authHeaders: cfg => {
+      const h = { 'anthropic-version': '2023-06-01' };
+      if (cfg.apiKey) h['x-api-key'] = cfg.apiKey;
+      if (cfg.allowBrowserDirect === true) h['anthropic-dangerous-direct-browser-access'] = 'true';
+      return h;
+    },
+    buildBody: (messages, o) => {
+      const conv = toAnthropicPayload(messages);
+      const body = {
+        model: o.model,
+        messages: conv.messages,
+        stream: !!o.stream,
+        max_tokens: Number.isFinite(o.maxTokens) && o.maxTokens > 0 ? Math.floor(o.maxTokens) : 4096,
+      };
+      if (conv.system) body.system = conv.system;
+      if (Number.isFinite(o.temperature)) body.temperature = o.temperature;
+      return body;
+    },
+    extractText: data => {
+      if (!data || typeof data !== 'object') return '';
+      if (Array.isArray(data.content)) {
+        return data.content.filter(p => p && (p.type === 'text' || typeof p.text === 'string'))
+          .map(p => String(p.text || '')).join('');
+      }
+      return '';
+    },
+    streamDelta: chunk => {
+      if (!chunk || typeof chunk !== 'object') return '';
+      if (chunk.delta && typeof chunk.delta.text === 'string') return chunk.delta.text;
+      return '';
+    },
+    finishReason: chunk => {
+      if (!chunk || typeof chunk !== 'object') return null;
+      return (chunk.delta && chunk.delta.stop_reason) || chunk.stop_reason || null;
+    },
+  },
+
+  'gemini-generateContent': {
+    id: 'gemini-generateContent',
+    label: 'Gemini 原生 (generateContent)',
+    browserDirect: true,
+    browserNote: 'Gemini 原生接口把 key 放在 URL 查询参数，浏览器直连会写进请求日志；' +
+      '公开部署建议改用 Edge Function 代理。',
+    chatPath: (model, stream) => 'models/' + encodeURIComponent(model || '') +
+      (stream ? ':streamGenerateContent?alt=sse' : ':generateContent'),
+    modelsPath: () => 'models',
+    authHeaders: cfg => (cfg.apiKey ? { 'x-goog-api-key': cfg.apiKey } : {}),
+    buildBody: (messages, o) => {
+      const body = toGeminiPayload(messages);
+      const gen = {};
+      if (Number.isFinite(o.maxTokens) && o.maxTokens > 0) gen.maxOutputTokens = Math.floor(o.maxTokens);
+      if (Number.isFinite(o.temperature)) gen.temperature = o.temperature;
+      if (o.jsonMode === true) gen.responseMimeType = 'application/json';
+      if (Object.keys(gen).length) body.generationConfig = gen;
+      return body;
+    },
+    extractText: data => {
+      if (!data || typeof data !== 'object') return '';
+      const parts = Array.isArray(data.candidates) && data.candidates[0] &&
+        data.candidates[0].content && data.candidates[0].content.parts;
+      if (!Array.isArray(parts)) return '';
+      return parts.filter(p => p && !p.thought).map(p => String(p.text || '')).join('');
+    },
+    streamDelta: chunk => {
+      if (!chunk || typeof chunk !== 'object') return '';
+      const parts = Array.isArray(chunk.candidates) && chunk.candidates[0] &&
+        chunk.candidates[0].content && chunk.candidates[0].content.parts;
+      if (!Array.isArray(parts)) return '';
+      return parts.filter(p => p && !p.thought).map(p => String(p.text || '')).join('');
+    },
+    finishReason: chunk => {
+      if (!chunk || typeof chunk !== 'object') return null;
+      return (Array.isArray(chunk.candidates) && chunk.candidates[0] &&
+        chunk.candidates[0].finishReason) || null;
+    },
+  },
+};
+
+function resolveAdapter(protocol) {
+  return PROTOCOL_ADAPTERS[protocol] || PROTOCOL_ADAPTERS['openai-chat'];
+}
+
 /** 接受 BaseURL 或完整端点，统一还原成不带尾斜杠的 API 根地址。 */
 function normalizeBaseUrl(raw) {
   return String(raw || '').trim()
@@ -127,6 +322,7 @@ function createIdeator(cfg) {
   const c = Object.assign({
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-v4-flash',
+    protocol: 'openai-chat',
     timeoutMs: 180000,
     maxTokens: 6144,
     maxRetries: 1,
@@ -135,6 +331,7 @@ function createIdeator(cfg) {
     jsonMode: false,
   }, cfg || {});
   c.baseUrl = normalizeBaseUrl(c.baseUrl);
+  const adapter = resolveAdapter(c.protocol);
   const doFetch = c.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
 
   function configured() {
@@ -152,8 +349,7 @@ function createIdeator(cfg) {
 
   function headers() {
     const h = { 'Content-Type': 'application/json' };
-    if (c.apiKey) h.Authorization = 'Bearer ' + c.apiKey;
-    return h;
+    return Object.assign(h, adapter.authHeaders(c) || {});
   }
 
   function cleanError(status, raw, action) {
@@ -244,6 +440,21 @@ function createIdeator(cfg) {
   }
 
   function extractContent(data) {
+    // 协议自带提取器优先（Anthropic/Gemini 结构差异大），不命中再走通用形状嗅探。
+    if (typeof adapter.extractText === 'function') {
+      const viaAdapter = adapter.extractText(data);
+      if (viaAdapter && String(viaAdapter).trim()) {
+        const finishA = typeof adapter.finishReason === 'function' ? adapter.finishReason(data) : null;
+        if (finishA && TRUNCATED_FINISH.has(finishA)) {
+          const err = new Error('模型输出达到长度上限（' + finishA + '），JSON 可能尚未结束');
+          err.kind = 'truncated';
+          err.finishReason = finishA;
+          err.partialText = String(viaAdapter).trim();
+          throw err;
+        }
+        return String(viaAdapter).trim();
+      }
+    }
     const choice = data && data.choices && data.choices[0];
     const msg = choice && choice.message;
     const content = msg && msg.content;
@@ -334,7 +545,7 @@ function createIdeator(cfg) {
       messages: [{ role: 'user', content: '请只回复：OK' }],
       stream: false,
     };
-    const r = await request('chat/completions', {
+    const r = await request(adapter.chatPath(c.model, false), {
       method: 'POST', body: JSON.stringify(body),
     }, Math.min(c.timeoutMs, 30000), '模型响应测试');
     const content = extractContent(r.data);
@@ -355,8 +566,16 @@ function createIdeator(cfg) {
 
   /** 模型枚举是辅助能力；失败不等于聊天线路不可用。 */
   async function fetchModels() {
-    const r = await request('models', { method: 'GET' }, 15000, '获取模型列表');
+    const modelsPath = typeof adapter.modelsPath === 'function' ? adapter.modelsPath() : 'models';
+    if (!modelsPath) {
+      const e = new Error('当前协议不支持模型枚举');
+      e.kind = 'unsupported';
+      throw e;
+    }
+    const r = await request(modelsPath, { method: 'GET' }, 15000, '获取模型列表');
     const d = r.data;
+    // Gemini 返回 { models: [{ name: 'models/gemini-x', ... }] }，
+    // Anthropic 返回 { data: [{ id, display_name }] }，OpenAI 返回 { data: [{ id }] }。
     const rawList = Array.isArray(d) ? d : (d && (d.data || d.models)) || [];
     if (!Array.isArray(rawList)) {
       const e = new Error('获取模型列表失败：返回数据缺少 data/models 数组');
@@ -366,8 +585,11 @@ function createIdeator(cfg) {
     const models = [];
     const seen = new Set();
     for (const item of rawList) {
-      const id = typeof item === 'string' ? item : item && (item.id || item.name);
-      if (typeof id !== 'string' || !id.trim() || seen.has(id) || !isLikelyChatModel(item, id)) continue;
+      let id = typeof item === 'string' ? item : item && (item.id || item.name);
+      if (typeof id !== 'string' || !id.trim()) continue;
+      // Gemini 的 name 带 models/ 前缀，要剔掉才能直接当模型名用
+      id = id.replace(/^models\//, '');
+      if (seen.has(id) || !isLikelyChatModel(item, id)) continue;
       seen.add(id);
       models.push(id);
     }
@@ -375,41 +597,18 @@ function createIdeator(cfg) {
   }
 
   /**
-   * 按模型名做参数减法（SillyTavern openai.js:2982 模式）。
-   * 先构造全集，再按模型名正则 delete 不支持字段、变形字段名。
-   * 这比「失败后按错误文本降级重试」可靠：它预防错误，不消费错误。
+   * 构造请求体：委托给当前协议适配器。
+   * OpenAI 兼容适配器内部仍采用「先全集、再按模型名正则做减法」
+   * （SillyTavern openai.js:2982 同模式），预防错误而不是消费错误。
    */
   function buildChatBody(messages, maxTokens, stream) {
-    const body = {
+    return adapter.buildBody(messages, {
       model: c.model,
-      messages,
+      maxTokens,
+      temperature: c.temperature,
       stream: !!stream,
-    };
-    if (Number.isFinite(maxTokens) && maxTokens > 0) {
-      body.max_tokens = Math.floor(maxTokens);
-    }
-    if (Number.isFinite(c.temperature)) body.temperature = c.temperature;
-    if (c.jsonMode === true) body.response_format = { type: 'json_object' };
-
-    const model = String(c.model || '').toLowerCase();
-    // o1/o3/o4 及 gpt-5 系列推理模型：max_tokens → max_completion_tokens，删采样参数
-    // （SillyTavern openai.js:2982 同模式）
-    if (/(?:^|\/)(o1|o3|o4|gpt-5)(?:-|$)/.test(model)) {
-      if (body.max_tokens != null) {
-        body.max_completion_tokens = body.max_tokens;
-        delete body.max_tokens;
-      }
-      delete body.temperature;
-      // o1 系列不允许 system 角色，降级为 user
-      if (/(?:^|\/)o1(?:-|$)/.test(model)) {
-        body.messages = body.messages.map(m =>
-          m && m.role === 'system' ? Object.assign({}, m, { role: 'user' }) : m);
-      }
-    }
-    // 注：不在此处把 max_tokens 改成 max_output_tokens。
-    // 本项目走的是 OpenAI 兼容端点（包括代理 Gemini 的网关），
-    // max_output_tokens 是 Gemini 原生字段，在兼容端上会被当成非法参数。
-    return body;
+      jsonMode: c.jsonMode,
+    });
   }
 
   /**
@@ -475,6 +674,10 @@ function createIdeator(cfg) {
   /** 从流 chunk 中读取截断信号，避免把半截 JSON 当成完整结果。 */
   function readStreamFinishReason(data) {
     if (!data || typeof data !== 'object') return null;
+    if (typeof adapter.finishReason === 'function') {
+      const viaAdapter = adapter.finishReason(data);
+      if (viaAdapter) return viaAdapter;
+    }
     const choice = data.choices && data.choices[0];
     const finish = (choice && (choice.finish_reason || choice.finishReason)) ||
       (Array.isArray(data.candidates) && data.candidates[0] && data.candidates[0].finishReason) ||
@@ -502,6 +705,11 @@ function createIdeator(cfg) {
    */
   function extractStreamDelta(data) {
     if (!data || typeof data !== 'object') return '';
+    // 协议自带的增量提取器优先
+    if (typeof adapter.streamDelta === 'function') {
+      const viaAdapter = adapter.streamDelta(data);
+      if (viaAdapter) return viaAdapter;
+    }
     // Anthropic / Claude
     if (data.delta && typeof data.delta.text === 'string') return data.delta.text;
     if (data.delta && typeof data.delta.thinking === 'string') return '';
@@ -557,7 +765,7 @@ function createIdeator(cfg) {
    */
   async function chatStream(messages, maxTokens) {
     const body = buildChatBody(messages, maxTokens, true);
-    const url = endpoint(c.baseUrl, 'chat/completions');
+    const url = endpoint(c.baseUrl, adapter.chatPath(c.model, true));
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     // 空闲超时：每收到一块数据就续命。
     // 用墙钟总超时会把正常的长流（推理模型常见）硬砍，还会丢弃已收正文。
@@ -704,7 +912,7 @@ function createIdeator(cfg) {
         throw e;
       }
       try {
-        const r = await request('chat/completions', {
+        const r = await request(adapter.chatPath(c.model, false), {
           method: 'POST', body: JSON.stringify(body),
         }, c.timeoutMs, '生成选题');
         return { text: extractContent(r.data), via: 'http' };
@@ -1019,7 +1227,16 @@ function createIdeator(cfg) {
     fetchModels,
     buildUserPrompt,
     parseIdeas,
-    get config() { return Object.assign({}, c, { apiKey: c.apiKey ? '***' : '' }); }
+    get config() { return Object.assign({}, c, { apiKey: c.apiKey ? '***' : '' }); },
+    get protocol() { return adapter.id; },
+    get protocolInfo() {
+      return {
+        id: adapter.id,
+        label: adapter.label,
+        browserDirect: adapter.browserDirect !== false,
+        browserNote: adapter.browserNote || null,
+      };
+    }
   };
 }
 
@@ -1054,5 +1271,6 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     createIdeator, fallbackIdeas, IDEATE_SYSTEM_PROMPT, buildUserPrompt,
     PROVIDER_PRESETS, normalizeBaseUrl, endpoint, isLikelyChatModel,
+    PROTOCOL_ADAPTERS, toAnthropicPayload, toGeminiPayload,
   };
 }
