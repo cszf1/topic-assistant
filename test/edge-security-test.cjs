@@ -44,7 +44,9 @@ const hr = t => console.log('\n' + '='.repeat(68) + '\n' + t + '\n' + '='.repeat
       MEOO_PROJECT_API_KEY: 'MEOO-SECRET',
       MEOO_PROJECT_BASE_URL: 'http://127.0.0.1:8822/v1',
       // 把 redirector 加入放行名单，模拟「白名单域名存在开放重定向」
-      PROXY_ALLOWED_HOSTS: 'opencode.ai,api.deepseek.com',
+      PROXY_ALLOWED_HOSTS: 'opencode.ai,api.deepseek.com,api.openai.com,openrouter.ai',
+      // 测试用短超时，否则要等默认 120s
+      UPSTREAM_TIMEOUT_MS: '3000',
     })[k] },
   };
   await import('../supabase/functions/meoo-ai/index.ts');
@@ -185,6 +187,52 @@ const hr = t => console.log('\n' + '='.repeat(68) + '\n' + t + '\n' + '='.repeat
   ck('带 CSP 限制脚本执行',
      /default-src 'none'/.test(hdrs.get('content-security-policy') || ''),
      String(hdrs.get('content-security-policy')));
+
+  hr('I. 上游超时（挂死连接不能一直计费）');
+  // 8824: 永不响应的上游，模拟挂死
+  const blackhole = http.createServer(() => { /* 故意不回 */ });
+  await new Promise(r => blackhole.listen(8824, '127.0.0.1', r));
+  // 8825: 响应头很快返回，但正文缓慢流式（模拟推理模型长思维链）
+  const slowStream = http.createServer((req, rp) => {
+    rp.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    let n = 0;
+    const iv = setInterval(() => {
+      rp.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'x' } }] }) + '\n\n');
+      if (++n >= 4) { clearInterval(iv); rp.write('data: [DONE]\n\n'); rp.end(); }
+    }, 260);
+  });
+  await new Promise(r => slowStream.listen(8825, '127.0.0.1', r));
+
+  // 把两个白名单域名分别映射到黑洞与慢流
+  const prevFetch = global.fetch;
+  global.fetch = (u, o) => {
+    const t = String(u);
+    if (t.startsWith('https://api.openai.com')) {
+      return prevFetch(t.replace(/^https:\/\/api\.openai\.com/, 'http://127.0.0.1:8824'), o);
+    }
+    if (t.startsWith('https://openrouter.ai')) {
+      return prevFetch(t.replace(/^https:\/\/openrouter\.ai/, 'http://127.0.0.1:8825'), o);
+    }
+    return prevFetch(u, o);
+  };
+
+  const t0 = Date.now();
+  const hung = await post({ 'x-target-url': 'https://api.openai.com/v1', 'x-custom-api-key': 'k' },
+    { model: 'm', messages: [{ role: 'user', content: 'x' }] });
+  const waited = Date.now() - t0;
+  ck('挂死上游被超时切断而非无限等待',
+     hung.status === 502 && waited < 8000, 'status=' + hung.status + ' 等待=' + waited + 'ms');
+
+  // 正常的慢流式不能被误杀：响应头很快到，正文分多次慢慢来
+  const slowRes = await post({ 'x-target-url': 'https://openrouter.ai/api/v1', 'x-custom-api-key': 'k' },
+    { model: 'm', messages: [{ role: 'user', content: 'x' }] });
+  const slowText = await slowRes.text();
+  const frames = (slowText.match(/data:/g) || []).length;
+  ck('正常长流未被超时误杀', slowRes.status === 200 && frames >= 5,
+     'status=' + slowRes.status + ' 帧数=' + frames);
+
+  global.fetch = prevFetch;
+  blackhole.close(); slowStream.close();
 
   hr('结果: ' + (total - bad) + '/' + total + ' 通过, ' + bad + ' 失败');
   redirector.close(); internal.close(); goodUpstream.close();

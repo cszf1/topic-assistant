@@ -41,6 +41,11 @@
  *      现对轨道 A 施加输出上限、消息条数/字符上限，并可用
  *      GATEWAY_ALLOWED_ORIGINS 限定来源（默认放开，便于本地调试）。
  *
+ *   8. 上游必须有超时。
+ *      Edge Function 按执行时长计费，上游挂住不返回就会一直占着连接烧额度。
+ *      流式响应不能用墙钟总超时（推理模型的长流是正常的），
+ *      所以只对「连接到首字节」设超时，流一旦开始就交给客户端与平台运行时管。
+ *
  * 【文档】https://docs.meoo.com/ai ｜ https://docs.meoo.com/file-6
  */
 
@@ -76,6 +81,13 @@ const DEFAULT_ALLOWED_HOSTS = [
 const BUILTIN_MAX_OUTPUT_TOKENS = 16384;
 const BUILTIN_MAX_MESSAGES = 32;
 const BUILTIN_MAX_CHARS = 60000;
+
+/*
+ * 上游连接超时（毫秒）。只覆盖「发出请求到拿到响应头」这一段：
+ * 流式正文可能持续几十秒到几分钟（推理模型思维链很长），
+ * 用墙钟总超时会把正常的长流硬砍掉。
+ */
+const UPSTREAM_TIMEOUT_MS = Number(Deno.env.get('UPSTREAM_TIMEOUT_MS') || '120000');
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -258,7 +270,20 @@ async function safeFetch(
   let current = targetUrl;
   let nextInit: RequestInit = init;
   for (let hop = 0; hop <= maxHops; hop++) {
-    const res = await fetch(current, { ...nextInit, redirect: 'manual' });
+    /*
+     * 只给「等响应头」这一段设超时，拿到响应头就立刻解除：
+     * 若把 signal 留到流读取阶段，AbortSignal.timeout 会在计时到点时
+     * 把正在传输的 SSE 流一起掐断，正常的长思维链会被误杀。
+     */
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(
+      new Error('上游 ' + UPSTREAM_TIMEOUT_MS + 'ms 未响应')), UPSTREAM_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(current, { ...nextInit, redirect: 'manual', signal: ctl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
     if (res.status < 300 || res.status >= 400) return res;
 
     const loc = res.headers.get('location');

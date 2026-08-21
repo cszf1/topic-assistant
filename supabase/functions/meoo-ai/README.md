@@ -73,6 +73,16 @@ Supabase 在 `verify_jwt=true` 时要求调用方带 `Authorization: Bearer <ano
 | `PROXY_ALLOWED_HOSTS` | 否 | 覆盖轨道 B 放行名单，逗号分隔；支持后缀匹配（`example.com` 同时匹配其子域） |
 | `PROXY_ALLOW_INSECURE` | 否 | 仅本地联调用：置 `true` 可放开 http 与私网限制。**生产环境绝不要开** |
 | `GATEWAY_ALLOWED_ORIGINS` | 建议填 | 允许调用本网关的页面来源，逗号分隔（如 `https://cszf1.github.io`）。留空则对全网开放，轨道 A 的平台额度谁都能花 |
+| `UPSTREAM_TIMEOUT_MS` | 否 | 上游「连接到响应头」超时，默认 `120000`。只覆盖等响应头这一段，不会掐断正在传输的流 |
+
+## verify_jwt 策略
+
+`supabase/config.toml` 显式声明 `verify_jwt = false`，这是刻意选择：本项目前端是纯静态页面，
+没有登录体系，也没有能安全存放 anon key 的地方；开启 JWT 校验只会让平台凭据和上游 API 凭据
+在同一个请求头里混淆（函数早期版本正因此把 `Authorization` 当上游 Bearer 转发而外泄凭据）。
+
+对应的补偿措施全部在 `index.ts` 内：来源白名单、轨道 A 限额、目标校验与逐跳重定向校验、上游超时。
+若日后接入真实登录体系，应改回 `true` 并让前端携带登录态 JWT，同时保留上述措施。
 
 默认放行名单：`opencode.ai`、`api.deepseek.com`、`api.siliconflow.cn`、`openrouter.ai`、
 `api.openai.com`、`open.bigmodel.cn`、`api.moonshot.cn`、`api.minimax.chat`、
