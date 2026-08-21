@@ -2256,7 +2256,7 @@ presetSel.addEventListener('change', () => {
     : '';
 });
 
-/* ---------- 接口协议选择（多协议适配） ---------- */
+/* ---------- 接口协议选择（单一标准：OpenAI 兼容 Chat Completions 聊天完成模式） ---------- */
 const protocolSel = $('protocolSelect');
 Object.keys(PROTOCOL_ADAPTERS).forEach(id => {
   const opt = document.createElement('option');
@@ -2264,22 +2264,11 @@ Object.keys(PROTOCOL_ADAPTERS).forEach(id => {
   opt.textContent = PROTOCOL_ADAPTERS[id].label;
   protocolSel.appendChild(opt);
 });
-protocolSel.value = (savedCfg.protocol && PROTOCOL_ADAPTERS[savedCfg.protocol])
-  ? savedCfg.protocol : 'openai-chat';
+protocolSel.value = 'openai-chat';
 
 function refreshProtocolNote(){
-  const a = PROTOCOL_ADAPTERS[protocolSel.value];
   const box = $('protocolNote');
-  if (!a) { box.textContent = ''; return; }
-  // 如实告知浏览器直连限制，而不是等它失败后报成“模型返回格式错误”
-  if (a.browserDirect === false) {
-    box.innerHTML = '<span style="color:var(--warn-fg)">⚠ ' +
-      esc(a.browserNote || '该协议不支持浏览器直连，需通过后端代理。') + '</span>';
-  } else if (a.browserNote) {
-    box.innerHTML = '<span style="color:var(--fg-muted)">' + esc(a.browserNote) + '</span>';
-  } else {
-    box.textContent = '';
-  }
+  box.innerHTML = '<span style="color:var(--fg-muted)">标准 Chat Completions 协议（兼容主流云端网关与本地服务）</span>';
 }
 refreshProtocolNote();
 protocolSel.addEventListener('change', () => {

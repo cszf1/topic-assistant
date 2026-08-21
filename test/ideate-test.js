@@ -6,6 +6,7 @@ const path = require('path');
 const { ANGLE_DICT } = require(path.join(__dirname, '..', 'web', 'angles.js'));
 const { createIdeator, fallbackIdeas, IDEATE_SYSTEM_PROMPT, buildUserPrompt,
   PROVIDER_PRESETS, normalizeBaseUrl, endpoint, isLikelyChatModel,
+  PROTOCOL_ADAPTERS,
   stripReasoning, extractPayloadText, isReasoningModel, estimateMaxTokens } =
   require(path.join(__dirname, '..', 'web', 'ideate.js'));
 // 第 12 节对抗场景用到模块级工具函数（用 M 命名空间避免与局部 ide 实例重名）
@@ -666,164 +667,16 @@ function mockLLM() {
      !!leakErr && !leakErr.message.includes(leakKey) && leakErr.message.includes('***'),
      leakErr && leakErr.message.slice(0, 80));
 
-  hr('9. 多协议适配（Anthropic / Gemini / Responses）');
+  hr('9. 单一标准协议（OpenAI 兼容 Chat Completions 聊天完成模式）');
   const protoIdeaJson = JSON.stringify({ ideas: [{
     zh: '协议题目', objectEn: 'retinal vessel segmentation',
   }] });
 
-  // Anthropic：x-api-key + anthropic-version，system 提到顶层，正文在 content[].text
-  let anthReq = null;
-  const anthIde = createIdeator({
-    protocol: 'anthropic-messages', apiKey: 'sk-ant-xxx',
-    baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4',
-    maxRetries: 0, stream: false,
-    fetchImpl: async (url, init) => {
-      anthReq = { url, headers: init.headers, body: JSON.parse(init.body) };
-      return { ok: true, status: 200, headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({
-          content: [{ type: 'text', text: protoIdeaJson }], stop_reason: 'end_turn' }) };
-    } });
-  const anthRes = await anthIde.generate({ ...PROFILE, count: 1 });
-  ck('Anthropic 走 /messages 端点', /\/messages$/.test(anthReq.url), anthReq.url);
-  ck('Anthropic 用 x-api-key 与 anthropic-version',
-    anthReq.headers['x-api-key'] === 'sk-ant-xxx' &&
-    anthReq.headers['anthropic-version'] === '2023-06-01' &&
-    !('Authorization' in anthReq.headers));
-  ck('Anthropic system 提到顶层且 messages 无 system 角色',
-    typeof anthReq.body.system === 'string' && anthReq.body.system.length > 0 &&
-    anthReq.body.messages.every(m => m.role !== 'system'));
-  ck('Anthropic max_tokens 必填且解析 content[].text',
-    anthReq.body.max_tokens === 6144 && anthRes.ok &&
-    anthRes.ideas[0].objectEn === 'retinal vessel segmentation');
-  ck('Anthropic 默认不声称可浏览器直连并给出提示',
-    anthIde.protocolInfo.browserDirect === false &&
-    /Edge Function/.test(anthIde.protocolInfo.browserNote || ''));
-
-  // Gemini：路径带 :generateContent，contents + systemInstruction，x-goog-api-key
-  let gemReq = null;
-  const gemIde = createIdeator({
-    protocol: 'gemini-generateContent', apiKey: 'AIza-xxx',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-2.5-pro', maxRetries: 0, stream: false,
-    fetchImpl: async (url, init) => {
-      gemReq = { url, headers: init.headers, body: JSON.parse(init.body) };
-      return { ok: true, status: 200, headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({ candidates: [{ content: { parts: [
-          { text: '思维链不要', thought: true },
-          { text: protoIdeaJson },
-        ] }, finishReason: 'STOP' }] }) };
-    } });
-  const gemRes = await gemIde.generate({ ...PROFILE, count: 1 });
-  ck('Gemini 走 models/{model}:generateContent',
-    /models\/gemini-2\.5-pro:generateContent$/.test(gemReq.url), gemReq.url);
-  ck('Gemini 用 x-goog-api-key 鉴权',
-    gemReq.headers['x-goog-api-key'] === 'AIza-xxx' && !('Authorization' in gemReq.headers));
-  ck('Gemini 转成 contents + systemInstruction，助手角色为 model',
-    Array.isArray(gemReq.body.contents) &&
-    gemReq.body.contents.every(x => x.role === 'user' || x.role === 'model') &&
-    !!gemReq.body.systemInstruction);
-  ck('Gemini 用 generationConfig.maxOutputTokens',
-    gemReq.body.generationConfig.maxOutputTokens === 6144 &&
-    !('max_tokens' in gemReq.body));
-  ck('Gemini 解析 parts 并跳过 thought',
-    gemRes.ok && gemRes.ideas[0].objectEn === 'retinal vessel segmentation' &&
-    !/思维链/.test(gemRes.raw));
-
-  // Gemini 流式：:streamGenerateContent?alt=sse
-  let gemStreamUrl = null;
-  const gemStreamBytes = new TextEncoder().encode([
-    'data: ' + JSON.stringify({ candidates: [{ content: { parts: [{ text: protoIdeaJson }] } }] }),
-    '',
-    'data: [DONE]',
-    '',
-  ].join('\n'));
-  const gemStreamIde = createIdeator({
-    protocol: 'gemini-generateContent', apiKey: 'AIza-xxx',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    model: 'gemini-2.5-flash', maxRetries: 0,
-    fetchImpl: async (url) => {
-      gemStreamUrl = url;
-      let sent = false;
-      return { ok: true, status: 200,
-        headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
-        body: { getReader: () => ({
-          async read() {
-            if (sent) return { done: true };
-            sent = true;
-            return { done: false, value: gemStreamBytes };
-          },
-          releaseLock() {}, cancel() {},
-        }) } };
-    } });
-  const gemStreamRes = await gemStreamIde.generate({ ...PROFILE, count: 1 });
-  ck('Gemini 流式走 :streamGenerateContent?alt=sse',
-    /:streamGenerateContent\?alt=sse$/.test(gemStreamUrl), gemStreamUrl);
-  ck('Gemini 流式解析成功',
-    gemStreamRes.ok && gemStreamRes.via === 'stream' &&
-    gemStreamRes.ideas[0].objectEn === 'retinal vessel segmentation');
-
-  // Anthropic 流式截断：delta.stop_reason = max_tokens 必须识别为截断
-  let anthStreamCalls = 0;
-  const anthTruncBytes = new TextEncoder().encode([
-    'event: content_block_delta',
-    'data: ' + JSON.stringify({ delta: { type: 'text_delta', text: '{"ideas":[{"zh":"半' } }),
-    '',
-    'event: message_delta',
-    'data: ' + JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'max_tokens' } }),
-    '',
-  ].join('\n'));
-  const anthOkBytes = new TextEncoder().encode([
-    'event: content_block_delta',
-    'data: ' + JSON.stringify({ delta: { type: 'text_delta', text: protoIdeaJson } }),
-    '',
-    'event: message_stop',
-    'data: ' + JSON.stringify({ type: 'message_stop' }),
-    '',
-  ].join('\n'));
-  const anthStreamIde = createIdeator({
-    protocol: 'anthropic-messages', apiKey: 'sk-ant-xxx',
-    baseUrl: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4',
-    maxRetries: 0,
-    fetchImpl: async () => {
-      anthStreamCalls++;
-      const payload = anthStreamCalls === 1 ? anthTruncBytes : anthOkBytes;
-      let sent = false;
-      return { ok: true, status: 200,
-        headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
-        body: { getReader: () => ({
-          async read() {
-            if (sent) return { done: true };
-            sent = true;
-            return { done: false, value: payload };
-          },
-          releaseLock() {}, cancel() {},
-        }) } };
-    } });
-  const anthStreamRes = await anthStreamIde.generate({ ...PROFILE, count: 1 });
-  ck('Anthropic 流式 stop_reason=max_tokens 视为截断并重试',
-    anthStreamRes.ok && anthStreamRes.recovered === true && anthStreamCalls === 2,
-    'calls=' + anthStreamCalls);
-
-  // Responses 协议：/responses + input + max_output_tokens
-  let respReq = null;
-  const respIde = createIdeator({
-    protocol: 'openai-responses', apiKey: 'sk-xxx',
-    baseUrl: 'https://api.openai.com/v1', model: 'gpt-5-mini',
-    maxRetries: 0, stream: false,
-    fetchImpl: async (url, init) => {
-      respReq = { url, body: JSON.parse(init.body) };
-      return { ok: true, status: 200, headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({ output_text: protoIdeaJson, status: 'completed' }) };
-    } });
-  const respRes = await respIde.generate({ ...PROFILE, count: 1 });
-  ck('Responses 走 /responses 端点', /\/responses$/.test(respReq.url), respReq.url);
-  ck('Responses 用 input + max_output_tokens，system 转 developer',
-    Array.isArray(respReq.body.input) &&
-    respReq.body.max_output_tokens === 6144 &&
-    respReq.body.input.some(m => m.role === 'developer') &&
-    !('messages' in respReq.body));
-  ck('Responses 解析 output_text', respRes.ok &&
-    respRes.ideas[0].objectEn === 'retinal vessel segmentation');
+  // 默认使用 openai-chat 聊天完成模式
+  const defaultIde = createIdeator({ apiKey: 'sk-test', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o' });
+  ck('默认协议为 openai-chat 聊天完成模式', defaultIde.protocol === 'openai-chat');
+  ck('协议列表只暴露单一标准 openai-chat',
+     Object.keys(PROTOCOL_ADAPTERS).length === 1 && 'openai-chat' in PROTOCOL_ADAPTERS);
 
   // 未知协议回退到 openai-chat，不能直接报错
   const fallbackProto = createIdeator({ protocol: 'nope', apiKey: 'k',
@@ -993,11 +846,11 @@ function mockLLM() {
   const bareRes = await bareIde.fetchModels();
   ck('裸数组模型列表可解析', bareRes.ok && bareRes.models.length === 2, JSON.stringify(bareRes.models));
 
-  const gemListIde = createIdeator({ protocol: 'gemini-generateContent', apiKey: 'k',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: 'm',
+  const gemListIde = createIdeator({ apiKey: 'k',
+    baseUrl: 'https://api.x.com/v1', model: 'm',
     fetchImpl: async () => jsonRes({ models: [{ name: 'models/gemini-2.5-pro' }] }) });
   const gemListRes = await gemListIde.fetchModels();
-  ck('Gemini models/ 前缀被剥离',
+  ck('models/ 前缀被剥离',
      gemListRes.ok && gemListRes.models[0] === 'gemini-2.5-pro', JSON.stringify(gemListRes.models));
 
   // 鉴权失败不该换地址重试（换了也没用，只会多打一次）

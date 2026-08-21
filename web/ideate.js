@@ -36,36 +36,10 @@ const PROVIDER_PRESETS = [
  *   browserDirect          -> 是否能在纯浏览器直连（否则需 Edge Function 代理）
  */
 
-/** OpenAI messages -> Anthropic（system 提到顶层） */
-function toAnthropicPayload(messages) {
-  const list = Array.isArray(messages) ? messages : [];
-  const systemText = list.filter(m => m && m.role === 'system')
-    .map(m => String(m.content || '')).join('\n\n');
-  const rest = list.filter(m => m && m.role !== 'system').map(m => ({
-    role: m.role === 'assistant' ? 'assistant' : 'user',
-    content: String(m.content || ''),
-  }));
-  return { system: systemText || undefined, messages: rest };
-}
-
-/** OpenAI messages -> Gemini（contents + systemInstruction，助手角色叫 model） */
-function toGeminiPayload(messages) {
-  const list = Array.isArray(messages) ? messages : [];
-  const systemText = list.filter(m => m && m.role === 'system')
-    .map(m => String(m.content || '')).join('\n\n');
-  const contents = list.filter(m => m && m.role !== 'system').map(m => ({
-    role: m.role === 'assistant' ? 'model' : 'user',
-    parts: [{ text: String(m.content || '') }],
-  }));
-  const payload = { contents };
-  if (systemText) payload.systemInstruction = { parts: [{ text: systemText }] };
-  return payload;
-}
-
 const PROTOCOL_ADAPTERS = {
   'openai-chat': {
     id: 'openai-chat',
-    label: 'OpenAI 兼容 (chat/completions)',
+    label: 'OpenAI 兼容 (Chat Completions 聊天完成模式)',
     browserDirect: true,
     chatPath: () => 'chat/completions',
     modelsPath: () => 'models',
@@ -105,127 +79,10 @@ const PROTOCOL_ADAPTERS = {
     streamDelta: null,   // 用通用形状嗅探
     finishReason: null,
   },
-
-  'openai-responses': {
-    id: 'openai-responses',
-    label: 'OpenAI Responses (/responses)',
-    browserDirect: true,
-    chatPath: () => 'responses',
-    modelsPath: () => 'models',
-    authHeaders: cfg => (cfg.apiKey ? { Authorization: 'Bearer ' + cfg.apiKey } : {}),
-    buildBody: (messages, o) => {
-      const body = {
-        model: o.model,
-        input: (Array.isArray(messages) ? messages : []).map(m => ({
-          role: m.role === 'system' ? 'developer' : m.role,
-          content: String(m.content || ''),
-        })),
-        stream: !!o.stream,
-      };
-      if (Number.isFinite(o.maxTokens) && o.maxTokens > 0) {
-        body.max_output_tokens = Math.floor(o.maxTokens);
-      }
-      return body;
-    },
-    extractText: null,
-    streamDelta: chunk => {
-      if (!chunk || typeof chunk !== 'object') return '';
-      if (typeof chunk.delta === 'string') return chunk.delta;
-      if (chunk.type === 'response.output_text.delta' && typeof chunk.delta === 'string') return chunk.delta;
-      return '';
-    },
-    finishReason: null,
-  },
-
-  'anthropic-messages': {
-    id: 'anthropic-messages',
-    label: 'Anthropic Messages (/v1/messages)',
-    // 官方允许浏览器直连，但必须显式开启并会暂露密钥，默认不推荐
-    browserDirect: false,
-    browserNote: 'Anthropic 需要 anthropic-dangerous-direct-browser-access 才能浏览器直连，' +
-      '且 API Key 会暴露给浏览器；建议改用 Edge Function 代理。',
-    chatPath: () => 'messages',
-    modelsPath: () => 'models',
-    authHeaders: cfg => {
-      const h = { 'anthropic-version': '2023-06-01' };
-      if (cfg.apiKey) h['x-api-key'] = cfg.apiKey;
-      if (cfg.allowBrowserDirect === true) h['anthropic-dangerous-direct-browser-access'] = 'true';
-      return h;
-    },
-    buildBody: (messages, o) => {
-      const conv = toAnthropicPayload(messages);
-      const body = {
-        model: o.model,
-        messages: conv.messages,
-        stream: !!o.stream,
-        max_tokens: Number.isFinite(o.maxTokens) && o.maxTokens > 0 ? Math.floor(o.maxTokens) : 4096,
-      };
-      if (conv.system) body.system = conv.system;
-      if (Number.isFinite(o.temperature)) body.temperature = o.temperature;
-      return body;
-    },
-    extractText: data => {
-      if (!data || typeof data !== 'object') return '';
-      if (Array.isArray(data.content)) {
-        return data.content.filter(p => p && (p.type === 'text' || typeof p.text === 'string'))
-          .map(p => String(p.text || '')).join('');
-      }
-      return '';
-    },
-    streamDelta: chunk => {
-      if (!chunk || typeof chunk !== 'object') return '';
-      if (chunk.delta && typeof chunk.delta.text === 'string') return chunk.delta.text;
-      return '';
-    },
-    finishReason: chunk => {
-      if (!chunk || typeof chunk !== 'object') return null;
-      return (chunk.delta && chunk.delta.stop_reason) || chunk.stop_reason || null;
-    },
-  },
-
-  'gemini-generateContent': {
-    id: 'gemini-generateContent',
-    label: 'Gemini 原生 (generateContent)',
-    browserDirect: true,
-    browserNote: 'Gemini 原生接口把 key 放在 URL 查询参数，浏览器直连会写进请求日志；' +
-      '公开部署建议改用 Edge Function 代理。',
-    chatPath: (model, stream) => 'models/' + encodeURIComponent(model || '') +
-      (stream ? ':streamGenerateContent?alt=sse' : ':generateContent'),
-    modelsPath: () => 'models',
-    authHeaders: cfg => (cfg.apiKey ? { 'x-goog-api-key': cfg.apiKey } : {}),
-    buildBody: (messages, o) => {
-      const body = toGeminiPayload(messages);
-      const gen = {};
-      if (Number.isFinite(o.maxTokens) && o.maxTokens > 0) gen.maxOutputTokens = Math.floor(o.maxTokens);
-      if (Number.isFinite(o.temperature)) gen.temperature = o.temperature;
-      if (o.jsonMode === true) gen.responseMimeType = 'application/json';
-      if (Object.keys(gen).length) body.generationConfig = gen;
-      return body;
-    },
-    extractText: data => {
-      if (!data || typeof data !== 'object') return '';
-      const parts = Array.isArray(data.candidates) && data.candidates[0] &&
-        data.candidates[0].content && data.candidates[0].content.parts;
-      if (!Array.isArray(parts)) return '';
-      return parts.filter(p => p && !p.thought).map(p => String(p.text || '')).join('');
-    },
-    streamDelta: chunk => {
-      if (!chunk || typeof chunk !== 'object') return '';
-      const parts = Array.isArray(chunk.candidates) && chunk.candidates[0] &&
-        chunk.candidates[0].content && chunk.candidates[0].content.parts;
-      if (!Array.isArray(parts)) return '';
-      return parts.filter(p => p && !p.thought).map(p => String(p.text || '')).join('');
-    },
-    finishReason: chunk => {
-      if (!chunk || typeof chunk !== 'object') return null;
-      return (Array.isArray(chunk.candidates) && chunk.candidates[0] &&
-        chunk.candidates[0].finishReason) || null;
-    },
-  },
 };
 
 function resolveAdapter(protocol) {
-  return PROTOCOL_ADAPTERS[protocol] || PROTOCOL_ADAPTERS['openai-chat'];
+  return PROTOCOL_ADAPTERS['openai-chat'];
 }
 
 /**
@@ -1597,7 +1454,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     createIdeator, fallbackIdeas, IDEATE_SYSTEM_PROMPT, buildUserPrompt,
     PROVIDER_PRESETS, normalizeBaseUrl, endpoint, isLikelyChatModel,
-    PROTOCOL_ADAPTERS, toAnthropicPayload, toGeminiPayload,
+    PROTOCOL_ADAPTERS,
     stripReasoning, extractPayloadText, isReasoningModel, estimateMaxTokens,
     candidateApiRoots, isPinnedBaseUrl,
   };
