@@ -76,6 +76,17 @@ const PROTOCOL_ADAPTERS = {
       if (Number.isFinite(o.temperature)) body.temperature = o.temperature;
       if (o.jsonMode === true) body.response_format = { type: 'json_object' };
       const model = String(o.model || '').toLowerCase();
+      /*
+       * reasoning_effort：直接告诉推理模型「少想点」，比单纯加大预算更省钱。
+       * 参考 SillyTavern openai.js:2760 恒发该参数；但它有后端能按 provider 白名单发，
+       * 纯前端面对任意兼容网关，所以只在调用方显式要求时才带（首次请求不带）。
+       */
+      if (o.reasoningEffort) {
+        // DeepSeek 只收 high/max 语义，low/minimal 会被报非法值；
+        // 它想要「少想」时正确做法是不传该参数。
+        const isDeepSeek = /deepseek/.test(model);
+        if (!isDeepSeek) body.reasoning_effort = o.reasoningEffort;
+      }
       // o1/o3/o4/gpt-5 系列：改名并删采样参数（SillyTavern openai.js:2982 同模式）
       if (/(?:^|\/)(o1|o3|o4|gpt-5)(?:[.\-]|$)/.test(model)) {
         if (body.max_tokens != null) {
@@ -528,9 +539,13 @@ function createIdeator(cfg) {
 
   function cleanError(status, raw, action) {
     const rawSource = String(raw || '').replace(/\s+/g, ' ');
-    const tokenParameterRejected = (status === 400 || status === 422) &&
-      /(unknown|unsupported|unrecognized|extra|not permitted|unexpected)[^\n]*(parameter|param|field|argument)/i.test(rawSource) &&
+    const badParam = (status === 400 || status === 422) &&
+      /(unknown|unsupported|unrecognized|extra|not permitted|unexpected|invalid)[^\n]*(parameter|param|field|argument)/i.test(rawSource);
+    const tokenParameterRejected = badParam &&
       /(max_tokens|max_completion_tokens|output token|max output)/i.test(rawSource);
+    // 部分 OpenAI 兼容网关不认 reasoning_effort，要能识别并自动摧除重发。
+    const effortRejected = (status === 400 || status === 422) &&
+      /reasoning_effort|reasoning\.effort|thinking/i.test(rawSource);
     let text = rawSource;
     // 短 key 必然无效，也一并遮蔽；避免错误信息把用户的误填内容带进页面。
     if (c.apiKey) text = text.split(c.apiKey).join('***');
@@ -549,6 +564,7 @@ function createIdeator(cfg) {
     e.kind = kind;
     e.raw = text;
     e.tokenParameterRejected = tokenParameterRejected;
+    e.effortRejected = effortRejected;
     return e;
   }
 
@@ -815,14 +831,14 @@ function createIdeator(cfg) {
    * OpenAI 兼容适配器内部仍采用「先全集、再按模型名正则做减法」
    * （SillyTavern openai.js:2982 同模式），预防错误而不是消费错误。
    */
-  function buildChatBody(messages, maxTokens, stream) {
-    return adapter.buildBody(messages, {
+  function buildChatBody(messages, maxTokens, stream, extra) {
+    return adapter.buildBody(messages, Object.assign({
       model: c.model,
       maxTokens,
       temperature: c.temperature,
       stream: !!stream,
       jsonMode: c.jsonMode,
-    });
+    }, extra || {}));
   }
 
   /**
@@ -992,8 +1008,8 @@ function createIdeator(cfg) {
    * 流式 chat 请求。stream=true 时用 SSE 逐块累积，避免正文挂起超时和 max_tokens 截断。
    * 若流式通道本身失败（如供应商不支持 SSE），静默回退非流式。
    */
-  async function chatStream(messages, maxTokens) {
-    const body = buildChatBody(messages, maxTokens, true);
+  async function chatStream(messages, maxTokens, extra) {
+    const body = buildChatBody(messages, maxTokens, true, extra);
     const url = endpoint(c.baseUrl, adapter.chatPath(c.model, true));
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     // 空闲超时：每收到一块数据就续命。
@@ -1102,6 +1118,9 @@ function createIdeator(cfg) {
   async function chat(messages, opts) {
     const o = opts || {};
     const maxTokens = Number.isFinite(o.maxTokens) ? o.maxTokens : c.maxTokens;
+    // reasoning_effort 只在调用方明确要求时下发；若网关不认这个参数，
+    // 摘掉它重发一次，而不是把整次生成判死。
+    let extra = o.reasoningEffort ? { reasoningEffort: o.reasoningEffort } : null;
     // 优先尝试流式（避开正文挂起与输出截断）。
     // 只有「已证实 SSE 通道本身不可用」才回退非流式；
     // 其余错误（鉴权、流内错误、空正文、截断、内容阻断）一律终止，
@@ -1113,13 +1132,19 @@ function createIdeator(cfg) {
       for (let i = 0; i <= c.maxRetries; i++) {
         throwIfAborted('生成选题');
         try {
-          const streamTxt = await chatStream(messages, maxTokens);
+          const streamTxt = await chatStream(messages, maxTokens, extra);
           if (streamTxt) return { text: streamTxt, via: 'stream' };
           break;
         } catch (e) {
           streamErr = e;
           if (abortedByUser) throw e;
           // 可恢复故障在流式通道内重试，不降级成非流式重发。
+          // 网关不支持 reasoning_effort：摘掉它立刻重试（不计入 maxRetries）
+          if (e.effortRejected && extra) {
+            extra = null;
+            i--;
+            continue;
+          }
           if (RETRYABLE_KINDS.has(e.kind) && i < c.maxRetries) {
             await new Promise(r => setTimeout(r, 1000 * (i + 1)));
             continue;
@@ -1132,7 +1157,7 @@ function createIdeator(cfg) {
     }
 
     // 非流式回退：按 buildChatBody 构建（已按模型名做过参数减法）
-    const body = buildChatBody(messages, maxTokens, false);
+    let body = buildChatBody(messages, maxTokens, false, extra);
     let lastErr = null;
     for (let i = 0; i <= c.maxRetries; i++) {
       if (abortedByUser) {
@@ -1148,6 +1173,12 @@ function createIdeator(cfg) {
       } catch (e) {
         lastErr = e;
         if (abortedByUser) break;
+        if (e.effortRejected && extra) {
+          extra = null;
+          body = buildChatBody(messages, maxTokens, false, null);
+          i--;
+          continue;
+        }
         const retryable = e.kind === 'network' || e.kind === 'timeout' ||
           e.kind === 'rate_limit' || e.kind === 'upstream';
         if (!retryable || i >= c.maxRetries) break;
@@ -1450,9 +1481,11 @@ function createIdeator(cfg) {
      * 现在每轮同时：加大输出预算 + 压缩字数要求 +（末轮）减少题数。
      */
     const attempts = [
-      { budget: Math.min(Math.round(budget0 * 1.8), 32768), count: wanted },
+      { budget: Math.min(Math.round(budget0 * 1.8), 32768), count: wanted,
+        effort: reasoning ? 'low' : null },
       { budget: Math.min(Math.round(budget0 * 2.6), 32768),
-        count: Math.max(3, Math.ceil(wanted / 2)) },
+        count: Math.max(3, Math.ceil(wanted / 2)),
+        effort: reasoning ? 'minimal' : null },
     ];
     let lastErr = null;
     for (const a of attempts) {
@@ -1477,7 +1510,7 @@ function createIdeator(cfg) {
         chatResult = await chat([
           { role: 'system', content: IDEATE_SYSTEM_PROMPT + notes.join('\n') },
           { role: 'user', content: retryUser },
-        ], { maxTokens: a.budget });
+        ], { maxTokens: a.budget, reasoningEffort: a.effort || undefined });
         throwIfAborted('生成选题');
         const ideas = parseIdeas(chatResult.text);
         const clean = extractPayloadText(chatResult.text);

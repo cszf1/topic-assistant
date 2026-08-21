@@ -1095,6 +1095,78 @@ function mockLLM() {
      M.isReasoningModel('qwen3-32b-no-think') === false &&
      M.isReasoningModel('deepseek-reasoner') === true);
 
+  hr('13. reasoning_effort（让推理模型少想，省于加大预算）');
+
+  const effJson = JSON.stringify({ ideas: [{ zh: 'E', objectEn: 'x', methodEn: 'y' }] });
+  const effOk = 'data: ' + JSON.stringify({ choices: [{ delta: { content: effJson } }] }) +
+    '\n\ndata: [DONE]\n\n';
+  const effTrunc = 'data: ' + JSON.stringify({ choices: [{
+    delta: { content: '{"ideas":[{"zh":"半' }, finish_reason: 'length' }] }) +
+    '\n\ndata: [DONE]\n\n';
+  const effSse = payload => {
+    let sent = false;
+    return { ok: true, status: 200,
+      headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+      body: { getReader: () => ({
+        async read() { if (sent) return { done: true }; sent = true;
+          return { done: false, value: new TextEncoder().encode(payload) }; },
+        releaseLock() {}, cancel() {} }) } };
+  };
+
+  // 首次请求必须不带该参数：纯前端面对任意兼容网关，先保最大兼容
+  const eb1 = [];
+  const effIde1 = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'o3-mini',
+    maxRetries: 0, fetchImpl: async (u, i) => { eb1.push(JSON.parse(i.body)); return effSse(effOk); } });
+  await effIde1.generate(PROFILE);
+  ck('首次请求不带 reasoning_effort', !('reasoning_effort' in eb1[0]),
+     Object.keys(eb1[0]).join(','));
+
+  // 截断重试：推理模型降到 low
+  const eb2 = [];
+  const effIde2 = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'o3-mini',
+    maxRetries: 0, fetchImpl: async (u, i) => { eb2.push(JSON.parse(i.body));
+      return effSse(eb2.length === 1 ? effTrunc : effOk); } });
+  const effRes2 = await effIde2.generate(PROFILE);
+  ck('截断重试对推理模型下发 reasoning_effort=low',
+     effRes2.ok && eb2[1].reasoning_effort === 'low', String(eb2[1].reasoning_effort));
+
+  // 非推理模型不该被下发该参数
+  const eb3 = [];
+  const effIde3 = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'gpt-4o-mini',
+    maxRetries: 0, fetchImpl: async (u, i) => { eb3.push(JSON.parse(i.body));
+      return effSse(eb3.length === 1 ? effTrunc : effOk); } });
+  await effIde3.generate(PROFILE);
+  ck('非推理模型重试不发 reasoning_effort', !('reasoning_effort' in eb3[1]),
+     Object.keys(eb3[1]).join(','));
+
+  // DeepSeek 只认 high/max，发 low 会被拒 → 必须不发
+  const eb4 = [];
+  const effIde4 = createIdeator({ apiKey: 'k', baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-reasoner', maxRetries: 0,
+    fetchImpl: async (u, i) => { eb4.push(JSON.parse(i.body));
+      return effSse(eb4.length === 1 ? effTrunc : effOk); } });
+  await effIde4.generate(PROFILE);
+  ck('DeepSeek 不下发 reasoning_effort', !('reasoning_effort' in eb4[1]),
+     Object.keys(eb4[1]).join(','));
+
+  // 网关不认该参数时：摘掉重发，不能把整次生成判死
+  const eb5 = [];
+  const effIde5 = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'o3-mini',
+    maxRetries: 0, fetchImpl: async (u, i) => {
+      const b = JSON.parse(i.body); eb5.push(b);
+      if (eb5.length === 1) return effSse(effTrunc);
+      if ('reasoning_effort' in b) {
+        return { ok: false, status: 400, headers: { get: () => 'application/json' },
+          text: async () => JSON.stringify({ error: {
+            message: 'Unrecognized request argument supplied: reasoning_effort' } }) };
+      }
+      return effSse(effOk);
+    } });
+  const effRes5 = await effIde5.generate(PROFILE);
+  ck('网关拒绝 reasoning_effort 时摘除并重发成功',
+     effRes5.ok && eb5.length === 3 && !('reasoning_effort' in eb5[2]),
+     'calls=' + eb5.length);
+
   hr('结果: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })();
