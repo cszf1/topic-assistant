@@ -1001,8 +1001,18 @@ function createIdeator(cfg) {
     } finally {
       if (timer) clearTimeout(timer);
       if (ctl) inFlight.delete(ctl);
-      // 提前 break 后不 cancel 会泄连接
-      if (reader) { try { reader.cancel(); } catch (e) { /* ignore */ } }
+      /*
+       * 提前 break 后不 cancel 会泄连接；但 parseSseLines 已在它的 finally 里
+       * releaseLock()，此时 cancel() 会返回一个 rejected Promise——
+       * 同步 try/catch 抳不住它，会冒成 unhandledrejection 在控制台报红。
+       * 所以既要包同步异常，也要接 .catch。
+       */
+      if (reader) {
+        try {
+          const p = reader.cancel();
+          if (p && typeof p.catch === 'function') p.catch(() => { /* 已释锁，忽略 */ });
+        } catch (e) { /* ignore */ }
+      }
     }
   }
 

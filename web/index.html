@@ -1074,6 +1074,12 @@ button.lg {
   color: var(--fg-muted);
   font-style: italic;
 }
+/* 思维链与正文分段标识 */
+.stream-seg-tag { font-weight: 800; }
+.stream-seg-tag.thinking { color: var(--warn-fg); }
+.stream-seg-tag.output { color: var(--ok-fg); }
+.stream-seg-thinking { color: var(--fg-muted); }
+
 .stream-cursor {
   display: inline-block;
   width: 6px;
@@ -1085,6 +1091,12 @@ button.lg {
 }
 @keyframes cursorBlink {
   to { visibility: hidden; }
+}
+/* 结束后停止一切“还在跑”的动画暗示 */
+.stream-monitor.finished .stream-pulse {
+  animation: none;
+  opacity: 0.45;
+  box-shadow: none;
 }
 
 /* ==========================================================================
@@ -2172,10 +2184,13 @@ footer {
   </div>
 </div>
 
-<script src="angles.js"></script>
-<script src="engine.js"></script>
-<script src="verify.js"></script>
-<script src="ideate.js"></script>
+<!-- ?v= 是缓存破除标记：GitHub Pages 对静态资源下发 Cache-Control: max-age=600，
+     不带版本参数时部署后浏览器最长 10 分钟仍在跑旧 JS（新功能看不到）。
+     改动 web/*.js 后请同步上调这个日期戳。 -->
+<script src="angles.js?v=20260821b"></script>
+<script src="engine.js?v=20260821b"></script>
+<script src="verify.js?v=20260821b"></script>
+<script src="ideate.js?v=20260821b"></script>
 <script>
 (function(){
 const $ = id => document.getElementById(id);
@@ -2650,9 +2665,20 @@ let currentView = 'card';
 
 function resetStreamMonitor(){
   $('streamMonitor').open = true;
+  $('streamMonitor').classList.remove('finished');
   $('streamMonitorTitle').textContent = '大模型实时思考与出题动态';
   $('streamCharCount').textContent = '0 字';
   $('streamLog').innerHTML = '<span class="stream-placeholder">连接大模型服务中，等待流式输出…</span><span class="stream-cursor"></span>';
+}
+
+/* 结束态：停止脉冲与光标，避免让人以为还在跑 */
+function finishStreamMonitor(title, collapse){
+  $('streamMonitor').classList.add('finished');
+  $('streamMonitorTitle').textContent = title;
+  const log = $('streamLog');
+  const cur = log.querySelector('.stream-cursor');
+  if (cur) cur.remove();
+  if (collapse) $('streamMonitor').open = false;
 }
 
 function updateStreamLog(chunkInfo){
@@ -2661,28 +2687,48 @@ function updateStreamLog(chunkInfo){
   const countEl = $('streamCharCount');
   const titleEl = $('streamMonitorTitle');
 
-  const fullThought = chunkInfo.fullThought || '';
-  const fullContent = chunkInfo.fullContent || '';
-  const totalChars = fullThought.length + fullContent.length;
-  countEl.textContent = totalChars + ' 字';
+  const rawThought = chunkInfo.fullThought || '';
+  const rawContent = chunkInfo.fullContent || '';
+
+  /*
+   * QwQ / R1 蒸馏 / 很多本地部署模型把思维链写成 <think>…</think> 放在 content 里，
+   * 不拆开就会把思考过程标成「题目生成结果」，标题也会误报。
+   * 直接复用 ideate.js 的状态机，与正式解析保持同一套语义。
+   */
+  let thought = rawThought;
+  let content = rawContent;
+  if (rawContent && typeof extractPayloadText === 'function') {
+    try {
+      const split = extractPayloadText(rawContent);
+      if (split.reasoning) {
+        thought = rawThought ? (rawThought + '\n' + split.reasoning) : split.reasoning;
+        content = split.text || '';
+      }
+    } catch (e) { /* 拆不开就按原样展示，不能因为展示逻辑弄挂生成 */ }
+  }
+
+  countEl.textContent = (rawThought.length + rawContent.length) + ' 字';
 
   let html = '';
-  if (fullThought) {
-    titleEl.textContent = '🧠 正在深度思考推理中…';
-    html += '<span style="color:var(--warn-fg);font-weight:700;">[深度思考思维链]</span>\n' +
-      esc(fullThought) + '\n\n';
+  if (thought) {
+    html += '<span class="stream-seg-tag thinking">[深度思考思维链]</span>\n' +
+      '<span class="stream-seg-thinking">' + esc(thought) + '</span>\n\n';
   }
-  if (fullContent) {
-    titleEl.textContent = '✍️ 正在生成结构化题目数据…';
-    html += '<span style="color:var(--ok-fg);font-weight:700;">[题目生成结果]</span>\n' +
-      esc(fullContent);
+  if (content) {
+    html += '<span class="stream-seg-tag output">[题目生成结果]</span>\n' + esc(content);
   }
+  // 标题取“当前真正在做的事”：正文已开始就是在输出，否则仍在思考
+  if (content) titleEl.textContent = '✍️ 正在生成结构化题目数据…';
+  else if (thought) titleEl.textContent = '🧠 正在深度思考推理中…';
+
   if (!html) {
     html = '<span class="stream-placeholder">等待大模型吐出思考流或题目数据…</span>';
   }
   html += '<span class="stream-cursor"></span>';
   logEl.innerHTML = html;
-  wrapEl.scrollTop = wrapEl.scrollHeight;
+  // 用户往上翻看旧内容时不该被强行拉回底部
+  const nearBottom = wrapEl.scrollHeight - wrapEl.scrollTop - wrapEl.clientHeight < 40;
+  if (nearBottom) wrapEl.scrollTop = wrapEl.scrollHeight;
 }
 
 function setProg(title, msg, pct, stage){
@@ -2743,8 +2789,7 @@ $('go').onclick = async () => {
     if (aborted) return;
 
     // 阶段 1 完成后，收纳打字机窗口并提示总字数
-    $('streamMonitorTitle').textContent = '✅ 已完成模型出题，正在核验学术文献…';
-    $('streamMonitor').open = false;
+    finishStreamMonitor('✅ 已完成模型出题，正在核验学术文献…', true);
 
     /* 阶段 2 & 3：OpenAlex 真实文献核查与条件匹配 */
     setProg('正在调取开放文献库进行双短语核查…', '正在执行 OpenAlex 真实论文计数与饱和度分析', 40, 2);
@@ -2769,6 +2814,7 @@ $('go').onclick = async () => {
   } catch (e) {
     $('progCard').classList.add('hide');
     if (aborted) return;
+    finishStreamMonitor('⚠️ 本次生成已中断', false);
     $('genErr').innerHTML = '<div class="note bad"><b>出题与核查失败：</b>' + esc(e.message || e) + '</div>';
   } finally {
     activeIdeator = null;
@@ -2859,6 +2905,9 @@ $('demoBtn').addEventListener('click', async () => {
   ];
 
   $('progCard').classList.remove('hide');
+  // 演示数据不调用模型，必须清掉上一次真实生成的残留流，否则会让人误以为此刻在调模型
+  resetStreamMonitor();
+  finishStreamMonitor('ℹ️ 当前为内置基准题目（未调用大模型）', true);
   setProg('正在调取开放文献库核查基准选题…', '连接 OpenAlex 检索真实论文篇数…', 50, 2);
   const res = await verifyIdeas(screener, benchmarkIdeas, {
     conditions, concurrency: 3,
@@ -2879,6 +2928,7 @@ $('stop').onclick = () => {
   screener.abort();
   if (activeIdeator) activeIdeator.abort();
   $('progCard').classList.add('hide');
+  finishStreamMonitor('⏹ 已中止（以下为中断前已收到的内容）', false);
   $('go').disabled = false;
   toast('已中止当前任务');
 };
