@@ -11,7 +11,9 @@
  * ========================================================================== */
 :root {
   /* 官方古典衬线与等宽字体栈 */
-  --font-sans: "PlantinNow", "Iowan Old Style", "Baskerville", Georgia, "Noto Serif SC", "Songti SC", "SimSun", serif;
+  /* 现代高清晰度界面字体栈（结合东方文人典雅衬线标题与屏幕极致易读性） */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-serif: "PlantinNow", "Iowan Old Style", "Baskerville", Georgia, "Noto Serif SC", "Songti SC", "SimSun", serif;
   --font-mono: "DepartureMono", "JetBrainsMono NFM", "JetBrains Mono", "IBM Plex Mono", ui-monospace, Menlo, monospace;
 
   --r-xs: 3px;
@@ -20,58 +22,58 @@
   --r-lg: 8px;
   --r-xl: 10px;
 
-  /* 通用深色模式变量（默认） */
-  --bg: #161410;
-  --bg-elev: rgba(33, 30, 25, 0.72);
-  --bg-card: rgba(28, 25, 20, 0.82);
-  --bg-sunk: rgba(42, 38, 31, 0.65);
-  --bg-sunk-hover: rgba(56, 50, 41, 0.85);
+  /* 通用深色模式变量（默认）：增强对比度与信息清晰度 */
+  --bg: #14120e;
+  --bg-elev: rgba(30, 26, 21, 0.78);
+  --bg-card: rgba(26, 23, 18, 0.88);
+  --bg-sunk: rgba(38, 34, 27, 0.75);
+  --bg-sunk-hover: rgba(52, 46, 37, 0.92);
 
-  --line: rgba(208, 138, 120, 0.24);
-  --line-strong: rgba(208, 138, 120, 0.42);
+  --line: rgba(208, 138, 120, 0.28);
+  --line-strong: rgba(208, 138, 120, 0.48);
   --line-focus: #d08a78;
   --folia-divider: rgba(208, 138, 120, 0.45);
 
-  --fg: #efe8dc;
-  --fg-secondary: #b0a89b;
-  --fg-muted: #8a8275;
-  --fg-light: #6a6358;
+  --fg: #f7f2ea;
+  --fg-secondary: #cdc4b5;
+  --fg-muted: #9e9587;
+  --fg-light: #736c60;
 
   /* 主题与强调色：暮金陶土、宣白、松绿与温润金 */
   --primary: #d08a78;
   --primary-hover: #df9d8d;
-  --primary-fg: #161410;
-  --primary-subtle: rgba(208, 138, 120, 0.14);
-  --primary-border: rgba(208, 138, 120, 0.35);
+  --primary-fg: #14120e;
+  --primary-subtle: rgba(208, 138, 120, 0.16);
+  --primary-border: rgba(208, 138, 120, 0.4);
 
   --accent: #d08a78;
   --accent-hover: #e59d8e;
-  --accent-subtle: rgba(208, 138, 120, 0.14);
-  --accent-border: rgba(208, 138, 120, 0.35);
+  --accent-subtle: rgba(208, 138, 120, 0.16);
+  --accent-border: rgba(208, 138, 120, 0.4);
 
-  /* 水墨状态色系：雅致松石墨绿、琥珀暮金、朱砂陶红、青墨黛蓝 */
-  --ok-bg: rgba(40, 58, 48, 0.65);
-  --ok-border: rgba(155, 176, 162, 0.45);
-  --ok-fg: #9bb0a2;
-  --ok-icon-fg: #161410;
+  /* 水墨状态色系：雅致松石墨绿、琥珀暮金、朱砂陶红、青墨黛蓝（强化字符对比度） */
+  --ok-bg: rgba(35, 56, 44, 0.75);
+  --ok-border: rgba(162, 192, 172, 0.55);
+  --ok-fg: #aed1ba;
+  --ok-icon-fg: #14120e;
 
-  --warn-bg: rgba(58, 48, 30, 0.65);
-  --warn-border: rgba(223, 178, 124, 0.45);
-  --warn-fg: #dfb27c;
-  --warn-icon-fg: #161410;
+  --warn-bg: rgba(56, 45, 25, 0.75);
+  --warn-border: rgba(235, 188, 128, 0.55);
+  --warn-fg: #eac085;
+  --warn-icon-fg: #14120e;
 
-  --bad-bg: rgba(62, 34, 30, 0.65);
-  --bad-border: rgba(224, 122, 104, 0.45);
-  --bad-fg: #e07a68;
-  --bad-icon-fg: #161410;
+  --bad-bg: rgba(62, 32, 28, 0.75);
+  --bad-border: rgba(232, 125, 105, 0.55);
+  --bad-fg: #eb8774;
+  --bad-icon-fg: #14120e;
 
-  --info-bg: rgba(32, 45, 56, 0.65);
-  --info-border: rgba(133, 167, 194, 0.45);
-  --info-fg: #85a7c2;
+  --info-bg: rgba(30, 46, 60, 0.75);
+  --info-border: rgba(142, 180, 210, 0.55);
+  --info-fg: #97bedc;
 
-  --inferred-bg: rgba(38, 34, 28, 0.65);
-  --inferred-border: rgba(208, 138, 120, 0.28);
-  --inferred-fg: #b0a89b;
+  --inferred-bg: rgba(36, 32, 25, 0.75);
+  --inferred-border: rgba(208, 138, 120, 0.32);
+  --inferred-fg: #cdc4b5;
 
   --sh-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
   --sh-md: 0 4px 16px rgba(0, 0, 0, 0.35);
@@ -82,57 +84,57 @@
   --transition-smooth: 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* 浅色模式：米白宣纸与半透明亚克力信笺 */
+/* 浅色模式：米白宣纸与半透明亚克力信笺（清晰高对比黑体/墨字） */
 html[data-theme="light"] {
-  --bg: #dcd4c6;
-  --bg-elev: rgba(235, 227, 214, 0.75);
-  --bg-card: rgba(245, 239, 229, 0.85);
-  --bg-sunk: rgba(225, 215, 200, 0.72);
-  --bg-sunk-hover: rgba(215, 203, 186, 0.9);
+  --bg: #dbd3c5;
+  --bg-elev: rgba(236, 229, 218, 0.85);
+  --bg-card: rgba(247, 242, 233, 0.92);
+  --bg-sunk: rgba(226, 217, 203, 0.82);
+  --bg-sunk-hover: rgba(216, 205, 189, 0.95);
 
-  --line: rgba(143, 63, 50, 0.22);
-  --line-strong: rgba(143, 63, 50, 0.38);
+  --line: rgba(143, 63, 50, 0.25);
+  --line-strong: rgba(143, 63, 50, 0.45);
   --line-focus: #8f3f32;
-  --folia-divider: rgba(143, 63, 50, 0.35);
+  --folia-divider: rgba(143, 63, 50, 0.38);
 
-  --fg: #1c1915;
-  --fg-secondary: #5c5449;
-  --fg-muted: #7a7062;
-  --fg-light: #9c9182;
+  --fg: #151310;
+  --fg-secondary: #483f34;
+  --fg-muted: #6e6456;
+  --fg-light: #948877;
 
   --primary: #8f3f32;
   --primary-hover: #732f24;
   --primary-fg: #ffffff;
-  --primary-subtle: rgba(143, 63, 50, 0.09);
-  --primary-border: rgba(143, 63, 50, 0.3);
+  --primary-subtle: rgba(143, 63, 50, 0.1);
+  --primary-border: rgba(143, 63, 50, 0.35);
 
   --accent: #8f3f32;
   --accent-hover: #732f24;
-  --accent-subtle: rgba(143, 63, 50, 0.09);
-  --accent-border: rgba(143, 63, 50, 0.3);
+  --accent-subtle: rgba(143, 63, 50, 0.1);
+  --accent-border: rgba(143, 63, 50, 0.35);
 
-  --ok-bg: rgba(63, 83, 72, 0.12);
-  --ok-border: rgba(63, 83, 72, 0.35);
-  --ok-fg: #2c4236;
+  --ok-bg: rgba(46, 74, 58, 0.14);
+  --ok-border: rgba(46, 74, 58, 0.42);
+  --ok-fg: #1c3d2b;
   --ok-icon-fg: #ffffff;
 
-  --warn-bg: rgba(153, 122, 0, 0.12);
-  --warn-border: rgba(153, 122, 0, 0.35);
-  --warn-fg: #805b00;
+  --warn-bg: rgba(153, 115, 0, 0.14);
+  --warn-border: rgba(153, 115, 0, 0.42);
+  --warn-fg: #7a5000;
   --warn-icon-fg: #ffffff;
 
-  --bad-bg: rgba(143, 63, 50, 0.12);
-  --bad-border: rgba(143, 63, 50, 0.35);
-  --bad-fg: #8f3f32;
+  --bad-bg: rgba(143, 55, 40, 0.14);
+  --bad-border: rgba(143, 55, 40, 0.42);
+  --bad-fg: #882b1c;
   --bad-icon-fg: #ffffff;
 
-  --info-bg: rgba(45, 74, 96, 0.12);
-  --info-border: rgba(45, 74, 96, 0.35);
-  --info-fg: #1d3c52;
+  --info-bg: rgba(35, 68, 92, 0.14);
+  --info-border: rgba(35, 68, 92, 0.42);
+  --info-fg: #153850;
 
-  --inferred-bg: rgba(143, 63, 50, 0.06);
-  --inferred-border: rgba(143, 63, 50, 0.22);
-  --inferred-fg: #5c5449;
+  --inferred-bg: rgba(143, 63, 50, 0.08);
+  --inferred-border: rgba(143, 63, 50, 0.28);
+  --inferred-fg: #483f34;
 
   --sh-sm: 0 2px 8px rgba(90, 82, 72, 0.08);
   --sh-md: 0 4px 16px rgba(90, 82, 72, 0.12);
@@ -643,24 +645,25 @@ input:focus, select:focus, textarea:focus {
   border: 1px dashed var(--line);
   background: var(--bg-card);
   border-radius: var(--r-md);
-  padding: 12px 14px;
+  padding: 13px 15px;
   cursor: pointer;
   transition: all var(--transition-fast);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
   user-select: none;
   position: relative;
 }
 .radio-card:hover {
   border-color: var(--line-strong);
   background: var(--bg-sunk);
+  transform: translateY(-1px);
 }
 .radio-card.active {
   border-color: var(--primary);
   border-style: solid;
   background: var(--primary-subtle);
-  box-shadow: inset 0 0 0 1px var(--primary-border);
+  box-shadow: inset 0 0 0 1px var(--primary-border), 0 2px 8px var(--primary-subtle);
 }
 .radio-card-head {
   display: flex;
@@ -669,18 +672,25 @@ input:focus, select:focus, textarea:focus {
   gap: 8px;
 }
 .radio-card-title {
-  font-size: 13.5px;
-  font-weight: 700;
+  font-size: 14px;
+  font-weight: 800;
   color: var(--fg);
+  letter-spacing: -0.01em;
 }
 .radio-card-desc {
-  font-size: 11.8px;
+  font-size: 12.2px;
   color: var(--fg-secondary);
-  line-height: 1.45;
+  line-height: 1.5;
+}
+.radio-card.active .radio-card-title {
+  color: var(--primary);
+}
+.radio-card.active .radio-card-desc {
+  color: var(--fg);
 }
 .radio-card-dot {
-  width: 13px;
-  height: 13px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   border: 1.5px solid var(--line-strong);
   flex-shrink: 0;
@@ -690,14 +700,15 @@ input:focus, select:focus, textarea:focus {
 .radio-card.active .radio-card-dot {
   border-color: var(--primary);
   background: var(--primary);
+  box-shadow: 0 0 6px var(--primary);
 }
 .radio-card.active .radio-card-dot::after {
   content: "";
   position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 4px;
-  height: 4px;
+  top: 3.5px;
+  left: 3.5px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--primary-fg);
 }
@@ -706,13 +717,13 @@ input:focus, select:focus, textarea:focus {
 .tag-cloud {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 8px;
+  gap: 8px;
+  margin-top: 10px;
 }
 .kw-tag {
-  font-size: 11.5px;
-  font-weight: 550;
-  padding: 3px 9px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 11px;
   border-radius: var(--r-sm);
   background: var(--bg-sunk);
   border: 1px dashed var(--line);
@@ -724,6 +735,7 @@ input:focus, select:focus, textarea:focus {
   background: var(--primary-subtle);
   border-color: var(--primary);
   color: var(--primary);
+  transform: translateY(-1px);
 }
 
 /* 按钮体系 (无厚重黑框，文人亚克力微微浮雕) */
@@ -1092,146 +1104,268 @@ button.lg {
   font-weight: 700;
 }
 
-/* 主推卡片 (Spotlight Pick Card) */
+/* 主推卡片 (Spotlight Pick Card) - 强化重点与信息架构 */
 .pick {
   background: var(--bg-card);
   border: 1px dashed var(--ok-border);
-  border-left: 4px solid var(--ok-fg);
+  border-left: 5px solid var(--ok-fg);
   border-radius: var(--r-lg);
-  padding: 26px 30px;
-  margin-bottom: 22px;
-  box-shadow: var(--sh-md);
-  backdrop-filter: blur(14px);
+  padding: 28px 32px;
+  margin-bottom: 24px;
+  box-shadow: var(--sh-lg);
+  backdrop-filter: blur(16px);
+  position: relative;
 }
 .pickeyebrow {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.03em;
   color: var(--ok-fg);
   background: var(--ok-bg);
-  border: 1px dashed var(--ok-border);
-  padding: 3px 10px;
+  border: 1px solid var(--ok-border);
+  padding: 4px 12px;
   border-radius: var(--r-sm);
   margin-bottom: 14px;
 }
+.pickeyebrow-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok-fg);
+  box-shadow: 0 0 8px var(--ok-fg);
+  display: inline-block;
+}
 .pick h2 {
-  font-size: 22px;
-  line-height: 1.35;
-  margin: 0 0 8px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
+  font-size: 23px;
+  line-height: 1.38;
+  margin: 0 0 10px;
+  font-weight: 850;
+  letter-spacing: -0.015em;
   color: var(--fg);
 }
 .picken {
-  font-size: 13px;
+  font-size: 13.5px;
   color: var(--fg-secondary);
-  margin: 0 0 18px;
+  margin: 0 0 20px;
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  line-height: 1.5;
 }
-.picken code { font-size: 12px; font-family: var(--font-mono); }
+.picken code {
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  background: var(--bg-sunk);
+  border: 1px dashed var(--line-strong);
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-weight: 600;
+}
 .copy-query-btn {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: var(--r-xs);
+  font-size: 11.5px;
+  font-weight: 650;
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
   background: var(--bg-sunk);
   border: 1px dashed var(--line);
-  color: var(--fg-secondary);
+  color: var(--primary);
   cursor: pointer;
   box-shadow: none;
+  transition: all var(--transition-fast);
 }
-.copy-query-btn:hover { background: var(--bg-sunk-hover); color: var(--primary); }
+.copy-query-btn:hover {
+  background: var(--primary-subtle);
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: translateY(-1px);
+}
 
+/* 核心结论三联卡 (Verdict Strip) */
 .verdict-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 12px;
-  margin: 18px 0;
+  margin: 20px 0;
 }
 .v-card {
-  background: var(--bg-card);
+  background: var(--bg-sunk);
   border: 1px dashed var(--folia-divider);
   border-radius: var(--r-md);
-  padding: 12px 14px;
+  padding: 14px 16px;
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: flex-start;
+  transition: transform var(--transition-fast), border-color var(--transition-fast);
 }
+.v-card:hover { transform: translateY(-1px); }
 .v-card.ok { border-color: var(--ok-border); background: var(--ok-bg); }
 .v-card.warn { border-color: var(--warn-border); background: var(--warn-bg); }
 .v-card.bad { border-color: var(--bad-border); background: var(--bad-bg); }
+.v-card.info { border-color: var(--info-border); background: var(--info-bg); }
+
 .v-icon {
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 850;
   flex-shrink: 0;
+  margin-top: 1px;
 }
 .v-card.ok .v-icon { background: var(--ok-fg); color: var(--ok-icon-fg); }
 .v-card.warn .v-icon { background: var(--warn-fg); color: var(--warn-icon-fg); }
 .v-card.bad .v-icon { background: var(--bad-fg); color: var(--bad-icon-fg); }
+.v-card.info .v-icon { background: var(--info-fg); color: var(--ok-icon-fg); }
 
-.v-body b { display: block; font-size: 13px; font-weight: 750; color: var(--fg); margin-bottom: 2px; }
-.v-body span { font-size: 12px; color: var(--fg-secondary); line-height: 1.5; }
+.v-body b {
+  display: block;
+  font-size: 13.8px;
+  font-weight: 800;
+  color: var(--fg);
+  margin-bottom: 4px;
+  letter-spacing: -0.01em;
+}
+.v-body span {
+  font-size: 12.5px;
+  color: var(--fg-secondary);
+  line-height: 1.55;
+  display: block;
+}
 
-/* 上手路径组件 */
+/* 核心推荐理由重点高亮卡 (Key Highlight Section) */
+.why-box {
+  background: var(--bg-sunk);
+  border: 1px dashed var(--line);
+  border-left: 3.5px solid var(--primary);
+  border-radius: var(--r-md);
+  padding: 14px 18px;
+  margin: 18px 0;
+}
+.why-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--primary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.why-text {
+  font-size: 14px;
+  color: var(--fg);
+  line-height: 1.68;
+  margin: 0;
+}
+
+/* 结构化开题路径与避坑卡片 (Step-by-Step Onboarding Grid) */
 .onboard {
   border: 1px dashed var(--folia-divider);
   border-radius: var(--r-md);
   background: var(--bg-sunk);
-  padding: 14px 18px;
-  margin: 18px 0 0;
+  padding: 18px 20px;
+  margin: 20px 0 0;
 }
 .onboard-h {
-  font-size: 12.5px;
-  font-weight: 750;
+  font-size: 13.5px;
+  font-weight: 800;
   color: var(--fg);
-  margin: 0 0 10px;
+  margin: 0 0 14px;
   display: flex;
   align-items: center;
-  gap: 6px;
-}
-.ob {
-  display: flex;
   gap: 8px;
-  align-items: flex-start;
-  margin: 0 0 8px;
-  font-size: 13px;
-  line-height: 1.55;
 }
-.ob:last-child { margin-bottom: 0; }
-.ob > i { flex: 0 0 auto; font-style: normal; font-size: 13px; color: var(--primary); }
-.ob-k { font-weight: 700; color: var(--fg); margin-right: 4px; }
-.ob-v { color: var(--fg-secondary); }
+.ob-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.ob-item {
+  background: var(--bg-card);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ob-item.step { border-left: 3px solid var(--ok-fg); }
+.ob-item.start { border-left: 3px solid var(--info-fg); }
+.ob-item.risk { border-left: 3px solid var(--warn-fg); background: var(--warn-bg); border-color: var(--warn-border); }
+
+.ob-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+}
+.ob-item.step .ob-tag { color: var(--ok-fg); }
+.ob-item.start .ob-tag { color: var(--info-fg); }
+.ob-item.risk .ob-tag { color: var(--warn-fg); }
+
+.ob-content {
+  font-size: 13px;
+  color: var(--fg);
+  line-height: 1.58;
+}
 .ob-none { font-size: 12.5px; color: var(--fg-muted); }
+
+/* 硬件与条件规格胶囊条 (Specs Pill Grid) */
+.specs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+}
+.spec-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: var(--r-sm);
+  background: var(--bg-sunk);
+  border: 1px dashed var(--line);
+  font-size: 12px;
+  color: var(--fg-secondary);
+}
+.spec-pill b { color: var(--fg); font-weight: 750; }
+.spec-pill .spec-label { color: var(--fg-muted); font-size: 11px; }
 
 /* 折叠候选行 (Row Details) */
 .row {
   border: 1px dashed var(--folia-divider);
   border-radius: var(--r-md);
-  margin-bottom: 10px;
+  margin-bottom: 12px;
   background: var(--bg-card);
   overflow: hidden;
-  transition: border-color var(--transition-fast);
+  transition: all var(--transition-fast);
 }
-.row:hover { border-color: var(--line-strong); }
-.row[open] { border-color: var(--primary); }
+.row:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--sh-sm);
+}
+.row[open] {
+  border-color: var(--primary);
+  box-shadow: var(--sh-md);
+}
 .row > summary {
   cursor: pointer;
   list-style: none;
-  padding: 13px 18px;
+  padding: 14px 20px;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
   user-select: none;
   transition: background var(--transition-fast);
@@ -1243,21 +1377,32 @@ button.lg {
   background: var(--bg-sunk);
 }
 .row .rt {
-  font-weight: 750;
-  font-size: 14px;
+  font-weight: 800;
+  font-size: 14.5px;
   flex: 1;
-  min-width: 160px;
-  line-height: 1.4;
+  min-width: 180px;
+  line-height: 1.45;
   color: var(--fg);
+  letter-spacing: -0.01em;
 }
 .row.dead .rt { color: var(--fg-muted); }
 .row.rec { border-color: var(--ok-border); }
 .row.rec > summary { background: var(--ok-bg); }
-.rstar { flex: 0 0 auto; font-size: 13px; line-height: 1; }
-.row .rn { font-size: 12px; color: var(--fg-muted); white-space: nowrap; font-family: var(--font-mono); }
-.row .rarw { color: var(--fg-muted); font-size: 10px; transition: transform var(--transition-fast); flex: 0 0 auto; }
+.rstar { flex: 0 0 auto; font-size: 14px; line-height: 1; filter: drop-shadow(0 0 2px rgba(223,178,124,0.6)); }
+.row .rn-badge {
+  font-size: 11.5px;
+  color: var(--fg-secondary);
+  background: var(--bg-sunk);
+  border: 1px dashed var(--line);
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.row .rarw { color: var(--fg-muted); font-size: 11px; transition: transform var(--transition-fast); flex: 0 0 auto; }
 .row[open] .rarw { transform: rotate(90deg); color: var(--primary); }
-.rowbody { padding: 18px 20px; }
+.rowbody { padding: 20px 22px; }
 
 .why {
   font-size: 13px;
@@ -2611,18 +2756,29 @@ const NEED_TXT = {
 function onboardBlock(x){
   const o = x.onboarding;
   if (!o || (!o.firstStep && !o.keyRisk && !o.startFrom)) {
-    return '<div class="onboard"><div class="onboard-h">开题实施路径建议</div>' +
+    return '<div class="onboard"><div class="onboard-h">🏁 开题实施路径建议</div>' +
       '<div class="ob-none">当前未生成详细实施建议。可点击「重新生成」获取。</div></div>';
   }
-  let h = '<div class="onboard"><div class="onboard-h">开题实施路径建议' +
-    ' <span class="src inferred">模型建议</span></div>';
-  if (o.firstStep) h += '<div class="ob"><i>•</i><div><span class="ob-k">首周启动建议：</span>' +
-    '<span class="ob-v">' + esc(o.firstStep) + '</span></div></div>';
-  if (o.startFrom) h += '<div class="ob"><i>•</i><div><span class="ob-k">推荐数据与基准：</span>' +
-    '<span class="ob-v">' + esc(o.startFrom) + '</span></div></div>';
-  if (o.keyRisk) h += '<div class="ob"><i>•</i><div><span class="ob-k">关键难点与风险：</span>' +
-    '<span class="ob-v">' + esc(o.keyRisk) + '</span></div></div>';
-  return h + '</div>';
+  let h = '<div class="onboard"><div class="onboard-h">🏁 开题实施路径建议' +
+    ' <span class="src inferred">模型建议</span></div>' +
+    '<div class="ob-grid">';
+  if (o.firstStep) {
+    h += '<div class="ob-item step">' +
+      '<div class="ob-tag"><span>① 首周启动建议</span></div>' +
+      '<div class="ob-content">' + esc(o.firstStep) + '</div></div>';
+  }
+  if (o.startFrom) {
+    h += '<div class="ob-item start">' +
+      '<div class="ob-tag"><span>📦 推荐数据与基准代码</span></div>' +
+      '<div class="ob-content">' + esc(o.startFrom) + '</div></div>';
+  }
+  if (o.keyRisk) {
+    h += '<div class="ob-item risk">' +
+      '<div class="ob-tag"><span>⚠️ 关键难点与避坑预警</span></div>' +
+      '<div class="ob-content">' + esc(o.keyRisk) + '</div></div>';
+  }
+  h += '</div></div>';
+  return h;
 }
 
 function verdictGridBlock(x, profile){
@@ -2631,18 +2787,18 @@ function verdictGridBlock(x, profile){
 
   // 1. 条件匹配
   if (x.fitness.verdict === 'go') {
-    h += '<div class="v-card ok"><div class="v-icon">✓</div><div class="v-body"><b>条件匹配良好</b><span>所填写的算力、数据与编程要求均无冲突，具备开工条件。</span></div></div>';
+    h += '<div class="v-card ok"><div class="v-icon">✓</div><div class="v-body"><b>条件匹配良好 (可行)</b><span>所填写的算力、数据与编程要求均无冲突，具备开工条件。</span></div></div>';
   } else {
     h += '<div class="v-card ' + (x.fitness.verdict === 'no-go' ? 'bad' : 'warn') + '"><div class="v-icon">' +
       (x.fitness.verdict === 'no-go' ? '×' : '!') + '</div><div class="v-body"><b>' +
-      (x.fitness.verdict === 'no-go' ? '存在硬性限制' : '需关注条件调整') + '</b><span>' +
+      (x.fitness.verdict === 'no-go' ? '存在硬性限制 (不推荐)' : '需关注条件调整') + '</b><span>' +
       esc(x.fitness.conflicts.map(c => c.message).join('；')) + '</span></div></div>';
   }
 
   // 2. 文献饱和度
   const satIsOk = ['sweet', 'crowded'].includes(x.saturation.key);
   h += '<div class="v-card ' + (SAT_TAG[x.saturation.key] || 'info') + '"><div class="v-icon">' + (satIsOk ? '★' : '!') + '</div><div class="v-body">' +
-    '<b>' + esc(x.saturation.label) + ' (专研 ' + x.saturation.focusCount + ' 篇)</b>' +
+    '<b>' + esc(x.saturation.label) + ' · 专研 ' + x.saturation.focusCount + ' 篇</b>' +
     '<span>' + esc(x.saturation.note) + '</span></div></div>';
 
   // 3. 周期评估
@@ -2650,8 +2806,8 @@ function verdictGridBlock(x, profile){
   if (Number.isFinite(w) && Number.isFinite(mine)) {
     const timeOk = w <= mine;
     h += '<div class="v-card ' + (timeOk ? 'ok' : 'warn') + '"><div class="v-icon">' + (timeOk ? '✓' : '!') + '</div><div class="v-body">' +
-      '<b>预计投入 ' + w + ' 周 (预算 ' + mine + ' 周)</b>' +
-      '<span>' + (timeOk ? '时间进度符合预期，留有充足调试余量。' : '超出预设时间预算 ' + (w - mine) + ' 周，建议收敛研究范围。') + '</span></div></div>';
+      '<b>预计投入 ' + w + ' 周 (预设 ' + mine + ' 周)</b>' +
+      '<span>' + (timeOk ? '时间进度符合预期，留有充足实验与撰写余量。' : '超出预设时间预算 ' + (w - mine) + ' 周，建议收敛研究范围。') + '</span></div></div>';
   }
 
   h += '</div>';
@@ -2661,7 +2817,7 @@ function verdictGridBlock(x, profile){
 function evidenceBlock(x){
   const ev = x.saturation.evidence;
   return '<details class="ev" data-ph="' + esc(x.phrase) + '" data-mode="title_and_abstract">' +
-    '<summary>文献检索记录（实测专研 ' + x.saturation.focusCount + ' 篇，领域提及 ' + x.saturation.mentionCount + ' 篇）与检索式</summary>' +
+    '<summary>📚 查看真实文献检索明细（实测专研 ' + x.saturation.focusCount + ' 篇，领域提及 ' + x.saturation.mentionCount + ' 篇）与检索式</summary>' +
     '<div class="hint" style="margin:8px 0 6px">精确检索式 <code>' + esc(x.phrase) + '</code>　' +
     '<a href="' + ev.webUrls.googleScholar + '" target="_blank">Google Scholar ↗</a>　' +
     '<a href="' + ev.webUrls.semanticScholar + '" target="_blank">Semantic Scholar ↗</a>　' +
@@ -2672,15 +2828,18 @@ function evidenceBlock(x){
 /* 主推置顶大卡 */
 function pickCard(x, profile){
   let h = '<div class="pick">';
-  h += '<div class="pickeyebrow">首选推荐 · 综合条件与文献饱和度匹配</div>';
+  h += '<div class="pickeyebrow"><span class="pickeyebrow-dot"></span> 🌟 首选推荐 · 综合条件与文献饱和度最佳匹配</div>';
   h += '<h2>' + esc(x.zh) + '</h2>';
-  h += '<p class="picken">学术检索词：<code>' + esc(x.objectEn) + '</code>' +
-       (x.methodEn ? ' + <code>' + esc(x.methodEn) + '</code>' : '') +
-       ' <button class="copy-query-btn" type="button" data-copy="' + esc(x.phrase) + '">复制检索式</button></p>';
+  h += '<p class="picken"><span style="font-weight:750;color:var(--fg);">学术检索词：</span>' +
+       '<code>' + esc(x.objectEn) + '</code>' +
+       (x.methodEn ? ' <span style="color:var(--fg-muted)">+</span> <code>' + esc(x.methodEn) + '</code>' : '') +
+       ' <button class="copy-query-btn" type="button" data-copy="' + esc(x.phrase) + '">📋 复制检索式</button></p>';
   h += verdictGridBlock(x, profile);
-  if (x.rationale) h += '<div class="why"><b>适配分析：</b>' + esc(x.rationale) +
-    ' <span class="src inferred">模型推断</span></div>';
-  if (x.warning) h += '<div class="note warn"><b>注意事项：</b>' + esc(x.warning) + '</div>';
+  if (x.rationale) {
+    h += '<div class="why-box"><div class="why-title">💡 核心推荐与适配理由 <span class="src inferred">模型推断</span></div>' +
+         '<p class="why-text">' + esc(x.rationale) + '</p></div>';
+  }
+  if (x.warning) h += '<div class="note warn"><b>⚠️ 注意事项：</b>' + esc(x.warning) + '</div>';
   h += onboardBlock(x);
   h += evidenceBlock(x);
   h += '</div>';
@@ -2696,24 +2855,30 @@ function rowItem(x, alsoRec){
     '<span class="rt">' + esc(x.zh) + '</span>' +
     '<span class="tag ' + fit[1] + '">' + fit[0] + '</span>' +
     '<span class="tag ' + (SAT_TAG[x.saturation.key] || '') + '">' + esc(x.saturation.label) + '</span>' +
-    '<span class="rn">专研 ' + x.saturation.focusCount + ' 篇</span>' +
+    '<span class="rn-badge">专研 ' + x.saturation.focusCount + ' 篇</span>' +
     '<span class="rarw">▶</span></summary>';
   h += '<div class="rowbody">';
-  if (x.rationale) h += '<div class="why" style="margin-top:0"><b>适配分析：</b>' + esc(x.rationale) +
-    ' <span class="src inferred">模型推断</span></div>';
-  if (x.warning) h += '<div class="note warn"><b>注意事项：</b>' + esc(x.warning) + '</div>';
-  h += '<div class="kv">' +
-    '<span>已专门研究 <b>' + x.saturation.focusCount + '</b> 篇 <span class="src measured">实测</span></span>' +
-    '<span>领域内提及 <b>' + x.saturation.mentionCount + '</b> 篇 <span class="src measured">实测</span></span>' +
-    (n.weeks ? '<span>预计 <b>' + n.weeks + '</b> 周 <span class="src inferred">估算</span></span>' : '') +
-    (n.gpu ? '<span>' + esc(NEED_TXT.gpu[n.gpu] || n.gpu) + '</span>' : '') +
-    (n.dataset ? '<span>' + esc(NEED_TXT.dataset[n.dataset] || n.dataset) + '</span>' : '') +
+  if (x.rationale) {
+    h += '<div class="why-box" style="margin-top:0"><div class="why-title">💡 选题分析与适配逻辑 <span class="src inferred">模型推断</span></div>' +
+         '<p class="why-text">' + esc(x.rationale) + '</p></div>';
+  }
+  if (x.warning) h += '<div class="note warn"><b>⚠️ 注意事项：</b>' + esc(x.warning) + '</div>';
+  
+  // 硬件与条件规格微型胶囊条
+  h += '<div class="specs-bar">' +
+    '<div class="spec-pill"><span class="spec-label">文献专研</span> <b>' + x.saturation.focusCount + ' 篇</b> <span class="src measured">实测</span></div>' +
+    '<div class="spec-pill"><span class="spec-label">领域提及</span> <b>' + x.saturation.mentionCount + ' 篇</b> <span class="src measured">实测</span></div>' +
+    (n.weeks ? '<div class="spec-pill"><span class="spec-label">预计周期</span> <b>' + n.weeks + ' 周</b> <span class="src inferred">估算</span></div>' : '') +
+    (n.gpu ? '<div class="spec-pill"><span class="spec-label">算力要求</span> <b>' + esc(NEED_TXT.gpu[n.gpu] || n.gpu) + '</b></div>' : '') +
+    (n.dataset ? '<div class="spec-pill"><span class="spec-label">数据门槛</span> <b>' + esc(NEED_TXT.dataset[n.dataset] || n.dataset) + '</b></div>' : '') +
+    (n.codingLevel ? '<div class="spec-pill"><span class="spec-label">代码难度</span> <b>' + esc(NEED_TXT.codingLevel[n.codingLevel] || n.codingLevel) + '</b></div>' : '') +
     '</div>';
+
   h += '<div class="note ' + (SAT_TAG[x.saturation.key] === 'bad' ? 'bad' : SAT_TAG[x.saturation.key] === 'ok' ? 'ok' : 'warn') + '">' +
-    '<b>文献饱和度：</b>' + esc(x.saturation.note) + '</div>';
+    '<b>📊 文献饱和度评估：</b>' + esc(x.saturation.note) + '</div>';
   if (x.fitness.conflicts.length){
     h += '<div class="note ' + (x.fitness.verdict === 'no-go' ? 'bad' : 'warn') + '">' +
-      '<b>' + (x.fitness.verdict === 'no-go' ? '限制与阻断原因：' : '注意事项：') + '</b><br>' +
+      '<b>' + (x.fitness.verdict === 'no-go' ? '🚫 硬性限制与阻断原因：' : '⚠️ 注意事项：') + '</b><br>' +
       x.fitness.conflicts.map(c => '· ' + esc(c.message)).join('<br>') + '</div>';
   }
   h += onboardBlock(x);
