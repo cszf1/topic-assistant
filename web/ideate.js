@@ -370,6 +370,14 @@ function createIdeator(cfg) {
     // 最小兼容请求默认不发送 temperature / response_format；仅显式开启才发送。
     temperature: null,
     jsonMode: false,
+    /*
+     * 网关（Edge Function）配置。gatewayMode 三态：
+     *   'off'     浏览器直连供应商（默认，行为与历史版本完全一致）
+     *   'builtin' 走网关轨道 A：平台内置 AI，密钥在服务端，本地一个 key 也不发
+     *   'proxy'   走网关轨道 B：把 baseUrl/apiKey 交给网关代发，绕开浏览器 CORS
+     */
+    gatewayUrl: '',
+    gatewayMode: 'off',
   }, cfg || {});
   c.rawBaseUrl = (cfg && cfg.baseUrl != null) ? String(cfg.baseUrl).trim() : '';
   c.baseUrl = normalizeBaseUrl(c.baseUrl);
@@ -377,7 +385,13 @@ function createIdeator(cfg) {
   const doFetch = c.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
 
   function configured() {
-    return !!(c.apiKey && c.baseUrl && c.model && doFetch);
+    if (!doFetch) return false;
+    const mode = gatewayMode();
+    // builtin：密钥在服务端，本地只需网关地址与模型名
+    if (mode === 'builtin') return !!(c.gatewayUrl && c.model);
+    // proxy：需要网关地址 + 上游地址 + 上游密钥（网关不会代提供密钥）
+    if (mode === 'proxy') return !!(c.gatewayUrl && c.baseUrl && c.apiKey && c.model);
+    return !!(c.apiKey && c.baseUrl && c.model);
   }
 
   // 在飞的请求，供界面「停止」按钮真正掐断，而不是只让结果不显示。
@@ -392,6 +406,43 @@ function createIdeator(cfg) {
   function headers() {
     const h = { 'Content-Type': 'application/json' };
     return Object.assign(h, adapter.authHeaders(c) || {});
+  }
+
+  /* ---------------------------------------------- 网关路由与密钥去向
+   *
+   * headers() 是全模块唯一的鉴权头出口，requestUrl / chatStream 都走它，
+   * 所以只看这一个函数就能确定「哪把 key 会被发往哪个 host」。
+   * 不要在其他任何地方拼鉴权头。
+   *
+   * 硬约束：
+   *   1. builtin 模式一个本地凭据也不发。平台内置 AI 用的是服务端密钥，
+   *      本地就算残留了 apiKey，也没有任何理由把它交给网关。
+   *   2. key 只进请求头，永不进 URL query（URL 会进 CDN / 网关访问日志）。
+   *   3. proxy 模式下浏览器只把 key 交给用户自己部署的网关，
+   *      由网关转给上游；不向第三方域名直接暴露 Authorization。
+   */
+  function gatewayMode() {
+    const m = String(c.gatewayMode || 'off');
+    if ((m === 'builtin' || m === 'proxy') && c.gatewayUrl) return m;
+    return 'off';
+  }
+
+  function headers() {
+    const mode = gatewayMode();
+    const h = { 'Content-Type': 'application/json' };
+    if (mode === 'builtin') return h;                 // 约束 1：零凭据
+    if (mode === 'proxy') {
+      // 告诉网关真正的上游是谁；网关侧还会做 SSRF 与主机白名单校验
+      h['x-target-url'] = normalizeBaseUrl(c.baseUrl);
+      if (c.apiKey) h['x-custom-api-key'] = c.apiKey;
+      return h;
+    }
+    return Object.assign(h, adapter.authHeaders(c) || {});
+  }
+
+  /** 请求基址：网关模式下一律发往网关，不再直连供应商。 */
+  function requestRoot() {
+    return gatewayMode() === 'off' ? c.baseUrl : c.gatewayUrl;
   }
 
   function cleanError(status, raw, action) {
@@ -439,8 +490,9 @@ function createIdeator(cfg) {
 
   /** 按相对路径请求（相对于已配置的 baseUrl）。 */
   async function request(path, init, timeoutMs, action) {
-    if (!c.baseUrl || !doFetch) throw new Error('缺少 Base URL 或当前环境没有 fetch');
-    return requestUrl(endpoint(c.baseUrl, path), init, timeoutMs, action);
+    const root = requestRoot();
+    if (!root || !doFetch) throw new Error('缺少 Base URL / 网关地址，或当前环境没有 fetch');
+    return requestUrl(endpoint(root, path), init, timeoutMs, action);
   }
 
   /** 按完整 URL 请求：模型列表探测需要逐个试不同的 API 根地址。 */
@@ -635,10 +687,14 @@ function createIdeator(cfg) {
     }
     // 用户常只填 https://api.x.com（不带 /v1），此时 /models 必然 404。
     // 纯前端没有后端替用户试错，所以这里依次探测候选根地址。
-    const roots = candidateApiRoots(c.rawBaseUrl != null ? c.rawBaseUrl : c.baseUrl);
+    // 网关模式下地址是确定的（就是 Edge Function 本身），不该再探测 /v1。
+    const gwMode = gatewayMode();
+    const roots = gwMode === 'off'
+      ? candidateApiRoots(c.rawBaseUrl != null ? c.rawBaseUrl : c.baseUrl)
+      : [normalizeBaseUrl(c.gatewayUrl)];
     const tried = [];
     let lastErr = null;
-    for (const root of (roots.length ? roots : [c.baseUrl])) {
+    for (const root of (roots.length ? roots : [requestRoot()])) {
       const url = root + '/' + modelsPath.replace(/^\/+/, '');
       tried.push(url);
       let r;
@@ -884,7 +940,7 @@ function createIdeator(cfg) {
    */
   async function chatStream(messages, maxTokens, extra, onChunk) {
     const body = buildChatBody(messages, maxTokens, true, extra);
-    const url = endpoint(c.baseUrl, adapter.chatPath(c.model, true));
+    const url = endpoint(requestRoot(), adapter.chatPath(c.model, true));
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
     // 空闲超时：每收到一块数据就续命。
     // 用墙钟总超时会把正常的长流（推理模型常见）硬砍，还会丢弃已收正文。
@@ -1461,6 +1517,23 @@ function createIdeator(cfg) {
     buildUserPrompt,
     parseIdeas,
     get config() { return Object.assign({}, c, { apiKey: c.apiKey ? '***' : '' }); },
+    get gatewayMode() { return gatewayMode(); },
+    /** 密钥去向自检：返回本次配置下请求会发往哪里、带哪些凭据字段。 */
+    describeDataFlow() {
+      const mode = gatewayMode();
+      const h = headers();
+      const credFields = Object.keys(h).filter(k =>
+        /^(authorization|x-api-key|x-goog-api-key|x-custom-api-key)$/i.test(k));
+      let host = '';
+      try { host = new URL(normalizeBaseUrl(requestRoot())).host; } catch (e) { host = '(地址无效)'; }
+      return {
+        mode,
+        requestHost: host,
+        sendsCredential: credFields.length > 0,
+        credentialHeaders: credFields,
+        upstreamDeclaredTo: mode === 'proxy' ? (h['x-target-url'] || '') : '',
+      };
+    },
     get protocol() { return adapter.id; },
     get protocolInfo() {
       return {

@@ -897,6 +897,40 @@ button.lg {
   border-bottom: 1px dashed var(--line);
 }
 .cfgbody { padding: 18px; background: var(--bg-card); }
+
+/* 云网关与本地数据管理分区 */
+.gw-block {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1.5px dotted var(--folia-divider);
+}
+.gw-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+.gw-flow {
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: var(--r-sm);
+  border: 1px dashed var(--line);
+  background: var(--bg-sunk);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--fg-secondary);
+}
+.gw-flow b { color: var(--fg); }
+.gw-flow code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg);
+}
+.gw-flow .gw-safe { color: var(--ok-fg); font-weight: 700; }
+.gw-flow .gw-warn { color: var(--warn-fg); font-weight: 700; }
 .input-with-btn { display: flex; gap: 8px; align-items: center; }
 .input-with-btn input { flex: 1; min-width: 0; }
 .keywrap { position: relative; }
@@ -2083,6 +2117,52 @@ footer {
           </div>
           <div id="modelNote" style="margin-top:8px;font-size:12.5px;color:var(--fg-muted)"></div>
           <div id="fetchModelsMsg" style="margin-top:10px;font-size:12.5px;color:var(--fg-muted)"></div>
+
+          <!-- 云网关（Edge Function）：免 Key 内置 AI 与跨域代理 -->
+          <div class="gw-block">
+            <div class="gw-head">
+              <span>云网关（可选）</span>
+              <span class="ctitle-badge" id="gwBadge">未启用 · 浏览器直连</span>
+            </div>
+            <p class="hint" style="margin:0 0 10px">浏览器无法直连未开启 CORS 的接口（如 OpenCode Zen、自建中转）。
+            配上云网关后，请求由云端代发，可绕开该限制。</p>
+            <div class="card-grid" id="gwModeCards">
+              <div class="radio-card" data-gwmode="off">
+                <div class="radio-card-head">
+                  <span class="radio-card-title">不使用网关</span><span class="radio-card-dot"></span>
+                </div>
+                <div class="radio-card-desc">浏览器直连供应商。仅适用于已开 CORS 的商业接口。</div>
+              </div>
+              <div class="radio-card" data-gwmode="builtin">
+                <div class="radio-card-head">
+                  <span class="radio-card-title">平台内置 AI（免 Key）</span><span class="radio-card-dot"></span>
+                </div>
+                <div class="radio-card-desc">密钥存在服务端。本地<b>不发送任何凭据</b>，无需自备 Key。</div>
+              </div>
+              <div class="radio-card" data-gwmode="proxy">
+                <div class="radio-card-head">
+                  <span class="radio-card-title">代理自定义接口</span><span class="radio-card-dot"></span>
+                </div>
+                <div class="radio-card-desc">用你自己的 Key 访问 OpenCode Zen 等无 CORS 接口。</div>
+              </div>
+            </div>
+            <div id="gwUrlWrap" style="margin-top:12px">
+              <label>云网关地址（Edge Function URL）</label>
+              <input id="gatewayUrl" placeholder="https://&lt;项目id&gt;.supabase.co/functions/v1/meoo-ai">
+            </div>
+            <div id="gwFlowNote" class="gw-flow"></div>
+          </div>
+
+          <!-- 本地数据管理 -->
+          <div class="gw-block">
+            <div class="gw-head"><span>本地数据管理</span></div>
+            <p class="hint" style="margin:0 0 10px" id="storageNote"></p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="exportCfgBtn" class="mini" type="button" title="导出配置（已自动除去密钥）">导出配置（不含密钥）</button>
+              <button id="clearKeyBtn" class="mini" type="button" title="仅清除本地保存的 API Key">只清除密钥</button>
+              <button id="clearAllBtn" class="mini" type="button" title="清除本站全部本地数据">清除全部本地数据</button>
+            </div>
+          </div>
         </div>
       </details>
 
@@ -2187,10 +2267,10 @@ footer {
 <!-- ?v= 是缓存破除标记：GitHub Pages 对静态资源下发 Cache-Control: max-age=600，
      不带版本参数时部署后浏览器最长 10 分钟仍在跑旧 JS（新功能看不到）。
      改动 web/*.js 后请同步上调这个日期戳。 -->
-<script src="angles.js?v=20260821b"></script>
-<script src="engine.js?v=20260821b"></script>
-<script src="verify.js?v=20260821b"></script>
-<script src="ideate.js?v=20260821b"></script>
+<script src="angles.js?v=20260821c"></script>
+<script src="engine.js?v=20260821c"></script>
+<script src="verify.js?v=20260821c"></script>
+<script src="ideate.js?v=20260821c"></script>
 <script>
 (function(){
 const $ = id => document.getElementById(id);
@@ -2309,9 +2389,19 @@ PROVIDER_PRESETS.forEach(p => {
 });
 
 const CFG_KEY = 'xt_llm_cfg';
-const CFG_VERSION = 3;
+const CFG_VERSION = 4;   // v4 起新增 gatewayUrl / gatewayMode
 let savedCfg = {};
 try { savedCfg = JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch(e){}
+
+/*
+ * 配置迁移：旧版本没有网关字段，补默认值即可，不要丢掉用户已填的
+ * baseUrl / model / apiKey。不可识别的 gatewayMode 一律归为 off，
+ * 宁可退回直连，也不要把请求发到一个意义不明的地址。
+ */
+if (savedCfg && typeof savedCfg === 'object') {
+  if (typeof savedCfg.gatewayUrl !== 'string') savedCfg.gatewayUrl = '';
+  if (!['off', 'builtin', 'proxy'].includes(savedCfg.gatewayMode)) savedCfg.gatewayMode = 'off';
+}
 
 let selectedPreset = PROVIDER_PRESETS.find(p => p.id === savedCfg.preset);
 if (!selectedPreset && savedCfg.baseUrl) {
@@ -2326,6 +2416,8 @@ const keepSaved = selectedPreset.id === 'custom' ||
 $('baseUrl').value = keepSaved && savedCfg.baseUrl ? savedCfg.baseUrl : selectedPreset.baseUrl;
 $('model').value = keepSaved && savedCfg.model ? savedCfg.model : selectedPreset.defaultModel;
 $('apiKey').value = savedCfg.apiKey || '';
+$('gatewayUrl').value = savedCfg.gatewayUrl || '';
+let gatewayMode = savedCfg.gatewayMode || 'off';
 
 function setBadge(state, text){
   const b = $('cfgBadge');
@@ -2335,6 +2427,16 @@ function setBadge(state, text){
 function refreshBadge(){
   const c = { baseUrl: $('baseUrl').value.trim(), apiKey: $('apiKey').value.trim(), model: $('model').value.trim() };
   refreshModelNote(c.model);
+  // 网关模式下必填项不同：builtin 只需网关+模型，proxy 还需上游地址与密钥
+  const gwUrl = $('gatewayUrl').value.trim();
+  if (gatewayMode === 'builtin') {
+    if (!gwUrl || !c.model) { setBadge('bad', '未填完'); return false; }
+    setBadge('warn', '待检查'); return true;
+  }
+  if (gatewayMode === 'proxy') {
+    if (!gwUrl || !c.baseUrl || !c.apiKey || !c.model) { setBadge('bad', '未填完'); return false; }
+    setBadge('warn', '待检查'); return true;
+  }
   if (!c.baseUrl || !c.apiKey || !c.model) { setBadge('bad', '未填完'); return false; }
   setBadge('warn', '待检查');
   return true;
@@ -2406,15 +2508,135 @@ function saveCfg(normalize){
     baseUrl: (shouldNormalize && !rawBaseUrl.endsWith('#'))
       ? normalizeBaseUrl(rawBaseUrl) : rawBaseUrl,
     apiKey: $('apiKey').value.trim(),
-    model: $('model').value.trim()
+    model: $('model').value.trim(),
+    gatewayUrl: $('gatewayUrl').value.trim(),
+    gatewayMode: gatewayMode,
   };
   if (shouldNormalize) $('baseUrl').value = c.baseUrl;
   try { localStorage.setItem(CFG_KEY, JSON.stringify(c)); } catch(e){}
   return c;
 }
 
+/* ---------- 云网关模式与数据去向自检 ---------- */
+const GW_BADGE = {
+  off: '未启用 · 浏览器直连',
+  builtin: '已启用 · 平台内置 AI（免 Key）',
+  proxy: '已启用 · 代理自定义接口',
+};
+
+function syncGatewayUI(){
+  document.querySelectorAll('#gwModeCards .radio-card').forEach(el => {
+    el.classList.toggle('active', el.dataset.gwmode === gatewayMode);
+  });
+  $('gwBadge').textContent = GW_BADGE[gatewayMode] || GW_BADGE.off;
+  $('gwUrlWrap').style.display = gatewayMode === 'off' ? 'none' : '';
+  // builtin 下本地 Key 与上游地址都用不上，直接置灰，避免用户白填
+  const idleLocal = gatewayMode === 'builtin';
+  $('apiKey').disabled = idleLocal;
+  $('baseUrl').disabled = idleLocal;
+  $('apiKey').placeholder = idleLocal ? '内置模式无需密钥' : 'sk-...';
+  renderDataFlow();
+}
+
+/* 把「密钥到底发往哪里」当面告知，而不是让用户自己猜 */
+function renderDataFlow(){
+  const box = $('gwFlowNote');
+  const cfg = saveCfg(false);
+  let flow = null;
+  try { flow = createIdeator(cfg).describeDataFlow(); } catch(e){}
+  if (!flow) { box.textContent = ''; return; }
+
+  const host = esc(flow.requestHost || '(未填地址)');
+  if (flow.mode === 'off') {
+    box.innerHTML = '<b>当前数据去向：</b>浏览器直接请求 <code>' + host + '</code>，' +
+      '并携带你的密钥（<code>Authorization</code>）。' +
+      '<br>若该接口未开启 CORS（如 OpenCode Zen），浏览器会在预检阶段直接拦住，请改用代理模式。';
+  } else if (flow.mode === 'builtin') {
+    box.innerHTML = '<b>当前数据去向：</b>只请求你的网关 <code>' + host + '</code>。' +
+      '<br><span class="gw-safe">本地不发送任何密钥</span>（平台密钥仅存于服务端环境变量）。';
+  } else {
+    const up = flow.upstreamDeclaredTo
+      ? esc((() => { try { return new URL(flow.upstreamDeclaredTo).host; } catch(e){ return flow.upstreamDeclaredTo; } })())
+      : '(未填上游)';
+    box.innerHTML = '<b>当前数据去向：</b>浏览器 → 你的网关 <code>' + host + '</code> → 上游 <code>' + up + '</code>。' +
+      '<br>密钥以 <code>x-custom-api-key</code> 请求头交给网关转发，' +
+      '<span class="gw-safe">不写入 URL</span>，浏览器也不直连上游。' +
+      '<br><span class="gw-warn">注意：</span>网关侧有主机放行名单与内网拦截，目标不在名单内会返回 403。';
+  }
+}
+
+document.querySelectorAll('#gwModeCards .radio-card').forEach(el => {
+  el.addEventListener('click', () => {
+    gatewayMode = el.dataset.gwmode || 'off';
+    saveCfg(false);
+    syncGatewayUI();
+    refreshBadge();
+  });
+});
+$('gatewayUrl').addEventListener('input', () => { saveCfg(false); renderDataFlow(); refreshBadge(); });
+
+/* ---------- 本地数据管理 ---------- */
+function renderStorageNote(){
+  let size = 0, hasKey = false;
+  try {
+    const raw = localStorage.getItem(CFG_KEY) || '';
+    size = raw.length;
+    hasKey = !!(JSON.parse(raw || '{}').apiKey);
+  } catch(e){}
+  $('storageNote').innerHTML =
+    '配置保存在浏览器 <code>localStorage</code>（键名 <code>' + CFG_KEY + '</code>，约 ' + size + ' 字节），' +
+    '<b>不会上传到任何服务器</b>。当前' +
+    (hasKey ? '<span class="gw-warn">已保存密钥（明文）</span>；共用电脑请用完清除。'
+            : '<span class="gw-safe">未保存密钥</span>。');
+}
+
+$('exportCfgBtn').addEventListener('click', () => {
+  const c = saveCfg(false);
+  // 导出一律剔除密钥，防止用户把含 Key 的 JSON 发给别人
+  const safe = Object.assign({}, c, { apiKey: undefined });
+  delete safe.apiKey;
+  const blob = new Blob([JSON.stringify(safe, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'topic-assistant-config.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('已导出配置（已自动去除密钥）');
+});
+
+$('clearKeyBtn').addEventListener('click', () => {
+  $('apiKey').value = '';
+  saveCfg(false);
+  renderStorageNote();
+  refreshBadge();
+  toast('已清除本地保存的密钥');
+});
+
+$('clearAllBtn').addEventListener('click', () => {
+  if (!confirm('将清除本站全部本地数据（接口配置、密钥与文献缓存），确定？')) return;
+  try {
+    localStorage.removeItem(CFG_KEY);
+    // 顺手清本站自己的其余缓存键，不动其他站点的数据
+    Object.keys(localStorage).filter(k => /^xt_/.test(k)).forEach(k => localStorage.removeItem(k));
+  } catch(e){}
+  $('apiKey').value = '';
+  $('gatewayUrl').value = '';
+  gatewayMode = 'off';
+  syncGatewayUI();
+  renderStorageNote();
+  refreshBadge();
+  toast('已清除全部本地数据');
+});
+
 ['baseUrl', 'apiKey', 'model'].forEach(id => {
-  $(id).addEventListener('input', () => { saveCfg(false); refreshBadge(); });
+  // 上游地址与密钥一变，「数据去向」描述必须同步刷新；
+  // 否则界面会声称发往旧上游，而实际已发往新上游，这是误导。
+  $(id).addEventListener('input', () => {
+    saveCfg(false);
+    refreshBadge();
+    renderDataFlow();
+    if (id === 'apiKey') renderStorageNote();
+  });
 });
 // 题数变化会改变输出预算，提示要跟着变
 $('count').addEventListener('input', () => refreshModelNote($('model').value));
@@ -3338,6 +3560,8 @@ document.addEventListener('toggle', async e => {
     '</div></div>').join('');
 }, true);
 
+syncGatewayUI();
+renderStorageNote();
 refreshBadge();
 })();
 </script>
