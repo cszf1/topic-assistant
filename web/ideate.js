@@ -301,6 +301,9 @@ function createIdeator(cfg) {
         '；系统将自动改用紧凑格式重试');
       err.kind = 'truncated';
       err.finishReason = finish || responseStatus || incompleteReason || null;
+      // 带上已收到的正文：部分网关在刚好用尽预算时也报 length，
+      // 若这段正文其实已是完整 JSON，上层可直接重用，避免白花一次重试。
+      err.partialText = outputText.trim() || null;
       throw err;
     }
     if (outputText.trim()) return outputText.trim();
@@ -371,53 +374,348 @@ function createIdeator(cfg) {
     return { ok: true, models, total: models.length, rawTotal: rawList.length, url: r.url };
   }
 
+  /**
+   * 按模型名做参数减法（SillyTavern openai.js:2982 模式）。
+   * 先构造全集，再按模型名正则 delete 不支持字段、变形字段名。
+   * 这比「失败后按错误文本降级重试」可靠：它预防错误，不消费错误。
+   */
+  function buildChatBody(messages, maxTokens, stream) {
+    const body = {
+      model: c.model,
+      messages,
+      stream: !!stream,
+    };
+    if (Number.isFinite(maxTokens) && maxTokens > 0) {
+      body.max_tokens = Math.floor(maxTokens);
+    }
+    if (Number.isFinite(c.temperature)) body.temperature = c.temperature;
+    if (c.jsonMode === true) body.response_format = { type: 'json_object' };
+
+    const model = String(c.model || '').toLowerCase();
+    // o1/o3/o4 及 gpt-5 系列推理模型：max_tokens → max_completion_tokens，删采样参数
+    // （SillyTavern openai.js:2982 同模式）
+    if (/(?:^|\/)(o1|o3|o4|gpt-5)(?:-|$)/.test(model)) {
+      if (body.max_tokens != null) {
+        body.max_completion_tokens = body.max_tokens;
+        delete body.max_tokens;
+      }
+      delete body.temperature;
+      // o1 系列不允许 system 角色，降级为 user
+      if (/(?:^|\/)o1(?:-|$)/.test(model)) {
+        body.messages = body.messages.map(m =>
+          m && m.role === 'system' ? Object.assign({}, m, { role: 'user' }) : m);
+      }
+    }
+    // 注：不在此处把 max_tokens 改成 max_output_tokens。
+    // 本项目走的是 OpenAI 兼容端点（包括代理 Gemini 的网关），
+    // max_output_tokens 是 Gemini 原生字段，在兼容端上会被当成非法参数。
+    return body;
+  }
+
+  /**
+   * SSE 行解析器（参考 SillyTavern sse-stream.js EventSourceStream）。
+   * 按 SSE 规范：事件以空行分隔，同一事件内多条 data: 需用 \n 拼接；
+   * 兼容 CRLF；忽略 event:/id:/retry: 和以 : 开头的注释行（如 OpenRouter 心跳）。
+   */
+  async function* parseSseLines(reader) {
+    const decoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null;
+    let buf = '';
+    const flush = function* (block) {
+      const dataLines = [];
+      for (const line of block.split('\n')) {
+        if (!line || line.startsWith(':')) continue; // 空行与注释行（如 OpenRouter 心跳）
+        if (!line.startsWith('data:')) continue;     // event:/id:/retry: 不参与正文
+        dataLines.push(line.slice(5).replace(/^ /, ''));
+      }
+      if (!dataLines.length) return;
+      // 有些网关把数据帧与 [DONE] 放在同一事件块里，
+      // 整块拼接后 JSON.parse 会失败并丢掉最后一个 delta。
+      // 先按单行尝试，全部失败才回退到多行拼接（SSE 规范）。
+      const perLineOk = dataLines.every(line => {
+        const t = line.trim();
+        if (!t) return false;
+        if (t === '[DONE]') return true;
+        try { JSON.parse(t); return true; } catch (e) { return false; }
+      });
+      if (perLineOk) {
+        for (const line of dataLines) {
+          const t = line.trim();
+          if (t) yield t;
+        }
+        return;
+      }
+      const payload = dataLines.join('\n').trim();
+      if (payload) yield payload;
+    };
+    try {
+      while (true) {
+        if (abortedByUser) return;
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder ? decoder.decode(value, { stream: true })
+          : String(value == null ? '' : value);
+        // SSE 规范允许 \n\n、\r\n\r\n 与裸 \r\r 作为事件分隔；先统一为 \n。
+        buf = buf.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const blocks = buf.split('\n\n');
+        buf = blocks.pop() || '';
+        for (const block of blocks) yield* flush(block);
+      }
+      // 尾部不完整多字节序列需要 flush，否则最后几个字会被吞。
+      if (decoder) {
+        const tailText = decoder.decode();
+        if (tailText) buf += tailText;
+      }
+      buf = buf.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      if (buf.trim()) yield* flush(buf);
+    } finally {
+      try { reader.releaseLock(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  /** 从流 chunk 中读取截断信号，避免把半截 JSON 当成完整结果。 */
+  function readStreamFinishReason(data) {
+    if (!data || typeof data !== 'object') return null;
+    const choice = data.choices && data.choices[0];
+    const finish = (choice && (choice.finish_reason || choice.finishReason)) ||
+      (Array.isArray(data.candidates) && data.candidates[0] && data.candidates[0].finishReason) ||
+      // Anthropic：message_delta.delta.stop_reason 与顶层 stop_reason
+      (data.delta && data.delta.stop_reason) ||
+      data.stop_reason ||
+      (data.incomplete_details && data.incomplete_details.reason) ||
+      (data.status === 'incomplete' ? 'incomplete' : null) ||
+      (data.type === 'response.incomplete' ? 'incomplete' : null);
+    return finish || null;
+  }
+
+  // 输出被截断（预算用尽）：需要紧凑重试
+  const TRUNCATED_FINISH = new Set(['length', 'max_tokens', 'max_output_tokens',
+    'MAX_TOKENS', 'incomplete']);
+  // 被内容策略阻断：重试同样会被阻，必须直接报错而不是静默接受残片
+  const BLOCKED_FINISH = new Set(['content_filter', 'SAFETY', 'RECITATION',
+    'PROHIBITED_CONTENT', 'BLOCKLIST']);
+
+  /**
+   * 按形状嗅探（非 provider 名）从流 chunk JSON 提取增量文本。
+   * 覆盖：OpenAI delta.content / Anthropic delta.text / Gemini candidates[].parts[].text /
+   * llama.cpp content / OpenRouter delta.content ?? message.content ?? text。
+   * 参考 SillyTavern getStreamingReply() (openai.js:3129)。
+   */
+  function extractStreamDelta(data) {
+    if (!data || typeof data !== 'object') return '';
+    // Anthropic / Claude
+    if (data.delta && typeof data.delta.text === 'string') return data.delta.text;
+    if (data.delta && typeof data.delta.thinking === 'string') return '';
+    // Gemini candidates[].content.parts[].text（跳过 thought 标记的 reasoning）
+    if (Array.isArray(data.candidates)) {
+      const parts = data.candidates[0] && data.candidates[0].content &&
+        data.candidates[0].content.parts;
+      if (Array.isArray(parts)) {
+        return parts.filter(p => p && !p.thought)
+          .map(p => (p && p.text) || '').join('');
+      }
+    }
+    // OpenAI chat completions delta
+    const choice = data.choices && data.choices[0];
+    if (choice) {
+      const delta = choice.delta || {};
+      if (typeof delta.content === 'string') return delta.content;
+      if (typeof delta.text === 'string') return delta.text;
+      if (Array.isArray(delta.content)) {
+        return delta.content.map(p => (p && (p.text || '')) || '').join('');
+      }
+      // 某些兼容层把最终 message 放进 chunk
+      const msg = choice.message || {};
+      if (typeof msg.content === 'string') return msg.content;
+    }
+    // llama.cpp / 本地推理裸文本
+    if (typeof data.content === 'string') return data.content;
+    if (typeof data.token === 'string') return data.token;
+    return '';
+  }
+
+  /**
+   * 流内错误提取（参考 SillyTavern tryParseStreamingError, openai.js:1624）。
+   * 部分供应商在 SSE 流中嵌入错误 JSON，需要在拼接正文前拦截。
+   */
+  function tryParseStreamError(data) {
+    if (!data || typeof data !== 'object') return null;
+    const errObj = data.error ||
+      (data.detail && data.detail.error) ||
+      (data.message && typeof data.message === 'object' && data.message.error ? data.message : null);
+    if (!errObj) return null;
+    let msg = String(errObj.message || errObj.msg || JSON.stringify(errObj)).slice(0, 200);
+    // 与 cleanError/invalidJson 保持一致的脱敏，避免网关回显 Authorization 时泄密。
+    if (c.apiKey) msg = msg.split(c.apiKey).join('***');
+    const e = new Error('流式请求失败：' + msg);
+    e.kind = 'stream_error';
+    return e;
+  }
+
+  /**
+   * 流式 chat 请求。stream=true 时用 SSE 逐块累积，避免正文挂起超时和 max_tokens 截断。
+   * 若流式通道本身失败（如供应商不支持 SSE），静默回退非流式。
+   */
+  async function chatStream(messages, maxTokens) {
+    const body = buildChatBody(messages, maxTokens, true);
+    const url = endpoint(c.baseUrl, 'chat/completions');
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    // 空闲超时：每收到一块数据就续命。
+    // 用墙钟总超时会把正常的长流（推理模型常见）硬砍，还会丢弃已收正文。
+    let timer = null;
+    const armTimer = () => {
+      if (!ctl) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => ctl.abort(), c.timeoutMs);
+    };
+    armTimer();
+    if (ctl) inFlight.add(ctl);
+    let full = '';
+    let reader = null;
+    try {
+      const res = await doFetch(url, {
+        method: 'POST',
+        headers: Object.assign(headers(), { Accept: 'text/event-stream' }),
+        body: JSON.stringify(body),
+        signal: ctl ? ctl.signal : undefined,
+      });
+      armTimer();
+      if (!res.ok) {
+        const raw = typeof res.text === 'function' ? await res.text() : '';
+        throw cleanError(res.status, raw, '流式生成选题');
+      }
+      const ct = (res.headers && typeof res.headers.get === 'function'
+        ? res.headers.get('content-type') : '') || '';
+      // 供应商返回普通 JSON 而非 SSE 流时，直接把完整 JSON 交给统一归一化层，
+      // 不需要 SSE 解析，也不需要回退非流式重复请求。
+      if (!ct.includes('text/event-stream') && !ct.includes('text/stream')) {
+        const raw = typeof res.text === 'function' ? await res.text() : '';
+        let data;
+        try { data = JSON.parse(raw); }
+        catch (e) { throw invalidJson(res, raw, '流式生成选题'); }
+        return extractContent(data);
+      }
+      if (!res.body || typeof res.body.getReader !== 'function') {
+        const e = new Error('当前环境不支持流式响应读取');
+        e.kind = 'stream_unsupported';
+        throw e;
+      }
+      let truncatedFinish = null;
+      let blockedFinish = null;
+      let sawDone = false;
+      reader = res.body.getReader();
+      for await (const data of parseSseLines(reader)) {
+        armTimer();
+        if (data === '[DONE]') { sawDone = true; break; }
+        let chunk;
+        try { chunk = JSON.parse(data); } catch (e) { continue; }
+        const streamErr = tryParseStreamError(chunk);
+        if (streamErr) throw streamErr;
+        full += extractStreamDelta(chunk);
+        const finish = readStreamFinishReason(chunk);
+        if (finish && TRUNCATED_FINISH.has(finish)) truncatedFinish = finish;
+        else if (finish && BLOCKED_FINISH.has(finish)) blockedFinish = finish;
+      }
+      if (blockedFinish) {
+        const err = new Error('模型因内容策略阻断而停止输出（' + blockedFinish +
+          '）；重试同样会被阻，请调整定制需求描述或换一个模型');
+        err.kind = 'content_blocked';
+        throw err;
+      }
+      // 流式也会被输出上限截断；此时正文可能停在 JSON 中间，
+      // 必须按截断处理以触发紧凑重试，不能当成完整结果。
+      if (truncatedFinish) {
+        const err = new Error('流式输出达到长度上限（' + truncatedFinish +
+          '），JSON 可能尚未结束；系统将自动改用紧凑格式重试');
+        err.kind = 'truncated';
+        err.finishReason = truncatedFinish;
+        err.partialText = full.trim() || null;
+        throw err;
+      }
+      const text = full.trim();
+      if (!text) {
+        // 空正文（如推理模型只吐思维链）不能静默回退再发一次付费请求。
+        const e = new Error('流式响应未返回可用正文' +
+          (sawDone ? '' : '（流被提前结束）') +
+          '；请换成非推理模型或稍后重试');
+        e.kind = 'empty_stream';
+        throw e;
+      }
+      // 流正常结束但没有 [DONE]，且正文本身不完整：按截断处理。
+      if (!sawDone && likelyTruncatedJson(text)) {
+        const err = new Error('流在 JSON 完成前被提前关闭；系统将自动改用紧凑格式重试');
+        err.kind = 'truncated';
+        err.finishReason = 'stream_closed';
+        err.partialText = text;
+        throw err;
+      }
+      return text;
+    } catch (e) {
+      // 被空闲超时/用户中止掉时，也把已收正文交出去，供上层尝试抢救。
+      if (e && !e.partialText && full.trim()) e.partialText = full.trim();
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (ctl) inFlight.delete(ctl);
+      // 提前 break 后不 cancel 会泄连接
+      if (reader) { try { reader.cancel(); } catch (e) { /* ignore */ } }
+    }
+  }
+
   /** 生成时采用广泛兼容的 Chat Completions 负载，并明确预留 JSON 输出预算。 */
   async function chat(messages, opts) {
     const o = opts || {};
     const maxTokens = Number.isFinite(o.maxTokens) ? o.maxTokens : c.maxTokens;
-    const buildBody = tokenField => {
-      const body = { model: c.model, messages, stream: false };
-      if (tokenField && Number.isFinite(maxTokens) && maxTokens > 0) {
-        body[tokenField] = Math.floor(maxTokens);
-      }
-      if (Number.isFinite(c.temperature)) body.temperature = c.temperature;
-      if (c.jsonMode === true) body.response_format = { type: 'json_object' };
-      return body;
-    };
-    const tokenFields = Number.isFinite(maxTokens) && maxTokens > 0
-      ? ['max_tokens', 'max_completion_tokens', null]
-      : [null];
-
-    let lastErr = null;
-    for (const tokenField of tokenFields) {
-      const body = buildBody(tokenField);
+    // 优先尝试流式（避开正文挂起与输出截断）。
+    // 只有「已证实 SSE 通道本身不可用」才回退非流式；
+    // 其余错误（鉴权、流内错误、空正文、截断、内容阻断）一律终止，
+    // 否则同一次生成会对同一个 prompt 发出两次付费请求。
+    const STREAM_FALLBACK_KINDS = new Set(['stream_unsupported', 'invalid_response']);
+    const RETRYABLE_KINDS = new Set(['network', 'timeout', 'rate_limit', 'upstream']);
+    if (c.stream !== false && !o.noStream) {
+      let streamErr = null;
       for (let i = 0; i <= c.maxRetries; i++) {
-        if (abortedByUser) {
-          const e = new Error('生成选题已中止');
-          e.kind = 'aborted';
-          throw e;
-        }
+        throwIfAborted('生成选题');
         try {
-          const r = await request('chat/completions', {
-            method: 'POST', body: JSON.stringify(body),
-          }, c.timeoutMs, '生成选题');
-          return extractContent(r.data);
+          const streamTxt = await chatStream(messages, maxTokens);
+          if (streamTxt) return { text: streamTxt, via: 'stream' };
+          break;
         } catch (e) {
-          lastErr = e;
-          // 只有明确指向 token 参数不兼容的 400/422 才切换参数名，
-          // 普通鉴权、模型不存在等错误不能盲目重复请求。
-          const tokenRejected = e.tokenParameterRejected === true;
-          if (tokenRejected && tokenField !== null) break;
-          // 用户主动停止产生的 AbortError 与真超时同 kind，不能拿去重试。
-          if (abortedByUser) break;
-          const retryable = e.kind === 'network' || e.kind === 'timeout' ||
-            e.kind === 'rate_limit' || e.kind === 'upstream';
-          if (!retryable || i >= c.maxRetries) break;
-          await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+          streamErr = e;
+          if (abortedByUser) throw e;
+          // 可恢复故障在流式通道内重试，不降级成非流式重发。
+          if (RETRYABLE_KINDS.has(e.kind) && i < c.maxRetries) {
+            await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+            continue;
+          }
+          break;
         }
       }
-      const canTryNextTokenField = lastErr && lastErr.tokenParameterRejected === true;
-      if (!canTryNextTokenField) break;
+      if (streamErr && !STREAM_FALLBACK_KINDS.has(streamErr.kind)) throw streamErr;
+      // 落到这里说明确实不支持 SSE，才允许重发为非流式。
+    }
+
+    // 非流式回退：按 buildChatBody 构建（已按模型名做过参数减法）
+    const body = buildChatBody(messages, maxTokens, false);
+    let lastErr = null;
+    for (let i = 0; i <= c.maxRetries; i++) {
+      if (abortedByUser) {
+        const e = new Error('生成选题已中止');
+        e.kind = 'aborted';
+        throw e;
+      }
+      try {
+        const r = await request('chat/completions', {
+          method: 'POST', body: JSON.stringify(body),
+        }, c.timeoutMs, '生成选题');
+        return { text: extractContent(r.data), via: 'http' };
+      } catch (e) {
+        lastErr = e;
+        if (abortedByUser) break;
+        const retryable = e.kind === 'network' || e.kind === 'timeout' ||
+          e.kind === 'rate_limit' || e.kind === 'upstream';
+        if (!retryable || i >= c.maxRetries) break;
+        await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+      }
     }
     throw lastErr || new Error('LLM 调用失败');
   }
@@ -458,8 +756,13 @@ function createIdeator(cfg) {
     return null;
   }
 
-  /** 从夹杂解释文字的回复中提取第一个括号完整、字符串转义合法的 JSON 候选。 */
+  /**
+   * 从夹杂解释文字的回复中提取括号完整、字符串转义合法的 JSON 候选。
+   * 先收集所有候选，再按「带候选列表字段」优先于「单个题目对象」选择，
+   * 避免外层容器被截断时退回到内层第一个完整对象、把多题静默缩成一题。
+   */
   function parseEmbeddedJson(s) {
+    let fallback = null;
     for (let start = 0; start < s.length; start++) {
       if (s[start] !== '{' && s[start] !== '[') continue;
       const stack = [];
@@ -481,13 +784,25 @@ function createIdeator(cfg) {
           if (!stack.length) {
             const candidate = s.slice(start, i + 1);
             const parsed = tryParseJson(candidate);
-            if (parsed !== null && isCandidateData(parsed)) return parsed;
+            if (parsed !== null && isCandidateData(parsed)) {
+              // 带显式候选列表的容器才是可信的完整输出；
+              // 单个题目对象只能做最后兵，且不能掩盖截断事实。
+              if (hasCandidateList(parsed)) return parsed;
+              if (fallback === null) fallback = parsed;
+            }
             break;
           }
         }
       }
     }
-    return null;
+    return fallback;
+  }
+
+  function hasCandidateList(d) {
+    if (Array.isArray(d)) return true;
+    if (!d || typeof d !== 'object') return false;
+    return Array.isArray(d.ideas) || Array.isArray(d.topics) || Array.isArray(d.list) ||
+      Array.isArray(d.items) || Array.isArray(d.candidates) || Array.isArray(d.results);
   }
 
   function isCandidateData(d) {
@@ -526,6 +841,17 @@ function createIdeator(cfg) {
     s = s.replace(/<(think|analysis|reasoning)>[\s\S]*?<\/\1>/gi, '').trim();
     s = s.replace(/^```(?:json|javascript|js)?\s*/i, '').replace(/\s*```$/i, '').trim();
     let d = tryParseJson(s);
+    // 整体直接解析失败时，先判定是不是被截断。
+    // 被截断就不得再从残片里“捣”出部分题目，否则会把 6 题静默缩成 1 题。
+    if (d === null && likelyTruncatedJson(s)) {
+      const compact = s.replace(/\s+/g, ' ');
+      const head = compact.slice(0, 100) || '（空）';
+      const tail = compact.length > 100 ? compact.slice(-100) : head;
+      const err = new Error('模型输出疑似在 JSON 完成前被截断；开头：' + head +
+        (tail !== head ? '；末尾：' + tail : ''));
+      err.kind = 'truncated_json';
+      throw err;
+    }
     if (d === null) d = parseEmbeddedJson(s);
     // 个别网关把 JSON 文本再次 JSON 编码，解开一层字符串包装。
     if (typeof d === 'string') d = tryParseJson(d.trim());
@@ -638,16 +964,27 @@ function createIdeator(cfg) {
       { role: 'system', content: IDEATE_SYSTEM_PROMPT },
       { role: 'user', content: userPrompt },
     ];
-    let txt;
+    let chatResult;
     throwIfAborted('生成选题');
     try {
-      txt = await chat(standard);
+      chatResult = await chat(standard);
       throwIfAborted('生成选题');
-      const ideas = parseIdeas(txt);
-      return { ok: true, ideas, raw: txt, model: c.model };
+      const ideas = parseIdeas(chatResult.text);
+      return { ok: true, ideas, raw: chatResult.text, model: c.model, via: chatResult.via };
     } catch (e) {
       const recoverable = e && ['truncated', 'truncated_json', 'invalid_model_json'].includes(e.kind);
       if (!recoverable || abortedByUser) throw e;
+      // 截断信号只是「怀疑」。先验证已收到的正文能否解析成合法候选，
+      // 能解析就直接用，不为一个不确定的 finish_reason 白花一次付费调用。
+      if (e.kind === 'truncated' && e.partialText) {
+        try {
+          const salvaged = parseIdeas(e.partialText);
+          if (salvaged.length) {
+            return { ok: true, ideas: salvaged, raw: e.partialText, model: c.model,
+              salvagedFromTruncation: true };
+          }
+        } catch (ignored) { /* 确实不完整，转入紧凑重试 */ }
+      }
     }
 
     const strictSystem = IDEATE_SYSTEM_PROMPT + [
@@ -658,13 +995,13 @@ function createIdeator(cfg) {
     ].join('\n');
     throwIfAborted('生成选题');
     try {
-      txt = await chat([
+      chatResult = await chat([
         { role: 'system', content: strictSystem },
         { role: 'user', content: userPrompt },
       ], { maxTokens: Math.max(4096, c.maxTokens || 0) });
       throwIfAborted('生成选题');
-      const ideas = parseIdeas(txt);
-      return { ok: true, ideas, raw: txt, model: c.model, recovered: true };
+      const ideas = parseIdeas(chatResult.text);
+      return { ok: true, ideas, raw: chatResult.text, model: c.model, recovered: true, via: chatResult.via };
     } catch (e) {
       if (e && ['truncated', 'truncated_json', 'invalid_model_json'].includes(e.kind)) {
         e.message += '；已自动用紧凑 JSON 重试一次，仍失败。建议换用非推理模型或减少候选题数量';

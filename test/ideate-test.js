@@ -321,57 +321,240 @@ function mockLLM() {
   ck('正式调用默认带有 JSON 输出预算', rr.ok && sentBody.max_tokens === 6144,
      JSON.stringify(sentBody));
 
-  let tokenFieldCalls = 0;
-  const tokenCompatIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
-    maxRetries: 0,
+  // 验证 buildChatBody 的模型名参数减法：o1 模型应重命名 max_tokens → max_completion_tokens 并删 temperature
+  const o1BodyIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'o1-mini',
+    maxRetries: 0, temperature: 0.7,
     fetchImpl: async (url, init) => {
-      tokenFieldCalls++;
       const body = JSON.parse(init.body);
-      if (tokenFieldCalls === 1) return { ok: false, status: 400,
-        headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({ error: { message: 'Unsupported parameter: max_tokens' } }) };
-      if (body.max_completion_tokens !== 6144) throw new Error('missing max_completion_tokens');
+      ck('o1 模型 max_tokens 重命名为 max_completion_tokens',
+        body.max_completion_tokens === 6144 && !('max_tokens' in body), JSON.stringify(body));
+      ck('o1 模型删除 temperature 参数', !('temperature' in body));
+      ck('o1 模型 system 角色降级为 user',
+        body.messages.every(m => m.role !== 'system'));
       return mockLLM();
     } });
-  const tokenCompat = await tokenCompatIde.generate(PROFILE);
-  ck('max_tokens 不兼容时降级到 max_completion_tokens',
-     tokenCompat.ok && tokenFieldCalls === 2, 'calls=' + tokenFieldCalls);
+  const o1Result = await o1BodyIde.generate(PROFILE);
+  ck('o1 模型生成成功', o1Result.ok && o1Result.ideas.length === 4);
 
-  let noTokenCalls = 0;
-  const noTokenIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+  // 验证普通模型保留 max_tokens 且不重命名
+  const normalBodyIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'gpt-4o-mini',
     maxRetries: 0,
     fetchImpl: async (url, init) => {
-      noTokenCalls++;
       const body = JSON.parse(init.body);
-      if (noTokenCalls < 3) return { ok: false, status: 422,
-        headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({ error: { message: 'unknown parameter max_completion_tokens' } }) };
-      if ('max_tokens' in body || 'max_completion_tokens' in body) throw new Error('token field should be absent');
+      ck('普通模型保留 max_tokens 字段', body.max_tokens === 6144 && !('max_completion_tokens' in body));
       return mockLLM();
     } });
-  const noToken = await noTokenIde.generate(PROFILE);
-  ck('两种 token 参数都不兼容时移除预算参数', noToken.ok && noTokenCalls === 3,
-     'calls=' + noTokenCalls);
+  const normalResult = await normalBodyIde.generate(PROFILE);
+  ck('普通模型生成成功', normalResult.ok && normalResult.ideas.length === 4);
 
-  let valueErrorCalls = 0;
-  const valueErrorIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+  // 验证流式 SSE 通道：mock 返回 SSE 格式流
+  const streamedIdeaJson = JSON.stringify({ ideas: [{
+    zh: '流式题目', objectEn: 'retinal vessel segmentation',
+    needs: { gpu: 'single', dataset: 'public', weeks: 12, codingLevel: 'mid' },
+  }] });
+  const sseText = [
+    'data: ' + JSON.stringify({ choices: [{ delta: { content: streamedIdeaJson } }] }),
+    '',
+    'data: [DONE]',
+    '',
+  ].join('\n');
+  const sseBody = new TextEncoder().encode(sseText);
+  const sseIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
     maxRetries: 0,
+    fetchImpl: async () => ({
+      ok: true, status: 200,
+      headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+      body: {
+        getReader() {
+          let sent = false;
+          return {
+            async read() {
+              if (sent) return { done: true };
+              sent = true;
+              return { done: false, value: sseBody };
+            },
+            releaseLock() {},
+          };
+        },
+      },
+    }),
+  });
+  const sseResult = await sseIde.generate({ ...PROFILE, count: 1 });
+  ck('SSE 流式通道解析成功', sseResult.ok && sseResult.ideas.length === 1 &&
+    sseResult.ideas[0].objectEn === 'retinal vessel segmentation');
+
+  // 通用流式 mock 工厂：把任意 SSE 文本分片成字节块供读取
+  const makeStreamIde = (sseRaw, chunkSize) => {
+    const bytes = new TextEncoder().encode(sseRaw);
+    const size = chunkSize || bytes.length;
+    let offset = 0;
+    return createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+      maxRetries: 0,
+      fetchImpl: async () => ({
+        ok: true, status: 200,
+        headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+        body: {
+          getReader: () => ({
+            async read() {
+              if (offset >= bytes.length) return { done: true };
+              const slice = bytes.slice(offset, offset + size);
+              offset += size;
+              return { done: false, value: slice };
+            },
+            releaseLock() {},
+          }),
+        },
+      }),
+    });
+  };
+
+  // CRLF + OpenRouter 心跳注释行 + 分片到达
+  const crlfRaw = [
+    ': OPENROUTER PROCESSING',
+    '',
+    'data: ' + JSON.stringify({ choices: [{ delta: { content: streamedIdeaJson.slice(0, 20) } }] }),
+    '',
+    'data: ' + JSON.stringify({ choices: [{ delta: { content: streamedIdeaJson.slice(20) } }] }),
+    '',
+    'data: [DONE]',
+    '',
+  ].join('\r\n');
+  const crlfResult = await makeStreamIde(crlfRaw, 24).generate({ ...PROFILE, count: 1 });
+  ck('CRLF/注释行/分片流拼接成功', crlfResult.ok &&
+    crlfResult.ideas[0].objectEn === 'retinal vessel segmentation');
+
+  // SSE 规范：同一事件内多条 data: 需用 \n 拼接后再解析
+  const multiLineIdeaJson = JSON.stringify({ ideas: [{
+    zh: '多行题目', objectEn: 'retinal vessel segmentation',
+  }] }, null, 1);
+  const multiLineRaw = 'data: ' +
+    JSON.stringify({ choices: [{ delta: { content: multiLineIdeaJson } }] })
+      .split('\n').join('\ndata: ') + '\n\ndata: [DONE]\n\n';
+  const multiLineResult = await makeStreamIde(multiLineRaw).generate({ ...PROFILE, count: 1 });
+  ck('同一事件多行 data 拼接成功', multiLineResult.ok &&
+    multiLineResult.ideas[0].zh === '多行题目');
+
+  // Anthropic 风格流：event 行 + delta.text
+  const anthropicRaw = [
+    'event: content_block_delta',
+    'data: ' + JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: streamedIdeaJson } }),
+    '',
+    'event: message_stop',
+    'data: ' + JSON.stringify({ type: 'message_stop' }),
+    '',
+  ].join('\n');
+  const anthropicResult = await makeStreamIde(anthropicRaw).generate({ ...PROFILE, count: 1 });
+  ck('Anthropic delta.text 流解析成功', anthropicResult.ok &&
+    anthropicResult.ideas[0].objectEn === 'retinal vessel segmentation');
+
+  // Gemini 风格流：candidates[].content.parts[].text，且跳过 thought 分片
+  const geminiRaw = [
+    'data: ' + JSON.stringify({ candidates: [{ content: { parts: [
+      { text: '忽略的思维链', thought: true },
+      { text: streamedIdeaJson },
+    ] } }] }),
+    '',
+    'data: [DONE]',
+    '',
+  ].join('\n');
+  const geminiResult = await makeStreamIde(geminiRaw).generate({ ...PROFILE, count: 1 });
+  ck('Gemini candidates 流解析并跳过 thought', geminiResult.ok &&
+    geminiResult.ideas[0].objectEn === 'retinal vessel segmentation' &&
+    !/思维链/.test(geminiResult.raw));
+
+  // 流式被长度上限截断：必须识别为截断并自动紧凑重试，不能当成完整结果
+  let streamTruncCalls = 0;
+  const truncStreamBytes = new TextEncoder().encode([
+    'data: ' + JSON.stringify({ choices: [{ delta: { content: '{"ideas":[{"zh":"半截"' } }] }),
+    '',
+    'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] }),
+    '',
+    'data: [DONE]',
+    '',
+  ].join('\n'));
+  const streamTruncIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async (url, init) => {
+      streamTruncCalls++;
+      const reqBody = JSON.parse(init.body);
+      if (reqBody.stream && streamTruncCalls === 1) {
+        let sent = false;
+        return { ok: true, status: 200,
+          headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+          body: { getReader: () => ({
+            async read() {
+              if (sent) return { done: true };
+              sent = true;
+              return { done: false, value: truncStreamBytes };
+            },
+            releaseLock() {},
+          }) } };
+      }
+      let sent2 = false;
+      const okBytes = new TextEncoder().encode([
+        'data: ' + JSON.stringify({ choices: [{ delta: { content: streamedIdeaJson }, finish_reason: 'stop' }] }),
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n'));
+      return { ok: true, status: 200,
+        headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+        body: { getReader: () => ({
+          async read() {
+            if (sent2) return { done: true };
+            sent2 = true;
+            return { done: false, value: okBytes };
+          },
+          releaseLock() {},
+        }) } };
+    } });
+  const streamTruncResult = await streamTruncIde.generate({ ...PROFILE, count: 1 });
+  ck('流式 finish_reason=length 视为截断并紧凑重试',
+    streamTruncResult.ok && streamTruncResult.recovered === true && streamTruncCalls === 2,
+    'calls=' + streamTruncCalls);
+
+  // 截断信号但正文已完整：不得白花一次付费重试
+  let salvageCalls = 0;
+  const salvageIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0, stream: false,
     fetchImpl: async () => {
-      valueErrorCalls++;
-      return { ok: false, status: 422,
+      salvageCalls++;
+      return { ok: true, status: 200,
         headers: { get: () => 'application/json' },
-        text: async () => JSON.stringify({ error: { message: 'max_tokens: 6144 exceeds model maximum of 4096' } }) };
+        text: async () => JSON.stringify({ choices: [{ finish_reason: 'length', message: {
+          content: streamedIdeaJson } }] }) };
     } });
-  let valueErr = null;
-  try { await valueErrorIde.generate(PROFILE); } catch (e) { valueErr = e; }
-  ck('token 数值超限不误判为参数名不兼容', !!valueErr && valueErrorCalls === 1,
-     'calls=' + valueErrorCalls);
+  const salvaged = await salvageIde.generate({ ...PROFILE, count: 1 });
+  ck('截断信号但 JSON 完整时直接重用，不重试',
+    salvaged.ok && salvaged.salvagedFromTruncation === true && salvageCalls === 1,
+    'calls=' + salvageCalls);
+
+  // 参数减法不应把 max_tokens 改成 Gemini 原生字段（OpenAI 兼容端会报非法参数）
+  const geminiCompatIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1',
+    model: 'google/gemini-2.5-pro', maxRetries: 0, stream: false,
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body);
+      ck('Gemini 兼容端保留 max_tokens 不改写',
+        body.max_tokens === 6144 && !('max_output_tokens' in body) &&
+        !('max_completion_tokens' in body), JSON.stringify(body));
+      return mockLLM();
+    } });
+  const geminiCompat = await geminiCompatIde.generate(PROFILE);
+  ck('Gemini 兼容端生成成功', geminiCompat.ok);
 
   let abortCalls = 0;
   const abortIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
     maxRetries: 0,
-    fetchImpl: async () => {
+    fetchImpl: async (url, init) => {
       abortCalls++;
+      const reqBody = JSON.parse(init.body);
+      if (reqBody.stream) {
+        // 流式请求：abort 在响应前触发，直接返回中止
+        abortIde.abort();
+        return { ok: true, status: 200,
+          headers: { get: () => 'text/event-stream' },
+          body: { getReader: () => ({ async read() { return { done: true }; }, releaseLock() {} }) } };
+      }
       const response = { ok: true, status: 200,
         headers: { get: () => 'application/json' },
         text: async () => JSON.stringify({ choices: [{ finish_reason: 'stop', message: {
@@ -384,16 +567,100 @@ function mockLLM() {
   ck('格式失败后用户停止不再发出紧凑重试', abortCalls === 1 && !!abortErr,
      'calls=' + abortCalls);
 
+  // 可恢复的 5xx：只在流式通道内重试一次，总共 2 次请求，
+  // 且不得在流式失败后额外再发一次非流式（否则就是重复计费）。
   let calls = 0;
+  const streamOkBytes = new TextEncoder().encode([
+    'data: ' + JSON.stringify({ choices: [{ delta: { content: streamedIdeaJson }, finish_reason: 'stop' }] }),
+    '',
+    'data: [DONE]',
+    '',
+  ].join('\n'));
   const retryIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
     maxRetries: 1,
     fetchImpl: async () => {
       calls++;
       if (calls === 1) return { ok: false, status: 500, text: async () => 'temporary' };
-      return mockLLM();
+      let sent = false;
+      return { ok: true, status: 200,
+        headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+        body: { getReader: () => ({
+          async read() {
+            if (sent) return { done: true };
+            sent = true;
+            return { done: false, value: streamOkBytes };
+          },
+          releaseLock() {},
+          cancel() {},
+        }) } };
     } });
-  const retried = await retryIde.generate(PROFILE);
-  ck('仅对可恢复的 5xx 故障重试', retried.ok && calls === 2, 'calls=' + calls);
+  const retried = await retryIde.generate({ ...PROFILE, count: 1 });
+  ck('可恢复 5xx 仅在流式内重试一次（不重复计费）',
+     retried.ok && calls === 2, 'calls=' + calls);
+
+  // 非可恢复的流内错误：必须终止，不得静默改发非流式
+  let streamErrCalls = 0;
+  const streamErrBytes = new TextEncoder().encode([
+    'data: ' + JSON.stringify({ error: { message: 'upstream refused' } }),
+    '',
+  ].join('\n'));
+  const streamErrIde = createIdeator({ apiKey: 'k', baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async () => {
+      streamErrCalls++;
+      let sent = false;
+      return { ok: true, status: 200,
+        headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+        body: { getReader: () => ({
+          async read() {
+            if (sent) return { done: true };
+            sent = true;
+            return { done: false, value: streamErrBytes };
+          },
+          releaseLock() {},
+          cancel() {},
+        }) } };
+    } });
+  let streamErrCaught = null;
+  try { await streamErrIde.generate(PROFILE); } catch (e) { streamErrCaught = e; }
+  ck('流内错误终止且不重发非流式',
+     !!streamErrCaught && streamErrCaught.kind === 'stream_error' && streamErrCalls === 1,
+     'calls=' + streamErrCalls + ' kind=' + (streamErrCaught && streamErrCaught.kind));
+
+  // 半截 JSON 不得静默缩成更少的题目
+  let shrinkErr = null;
+  try {
+    ide.parseIdeas('{"ideas":[{"zh":"A","objectEn":"x1"},{"zh":"B","objectEn":"x2"},{"zh":"C","objectEn":');
+  } catch (e) { shrinkErr = e; }
+  ck('多题被截断时报截断而不静默缩成 1 题',
+     !!shrinkErr && shrinkErr.kind === 'truncated_json',
+     shrinkErr && shrinkErr.kind);
+
+  // API key 不得出现在流内错误消息里
+  const leakKey = 'sk-leak-1234567890';
+  const leakBytes = new TextEncoder().encode('data: ' +
+    JSON.stringify({ error: { message: 'bad Authorization Bearer ' + leakKey } }) + '\n\n');
+  const leakIde = createIdeator({ apiKey: leakKey, baseUrl: 'https://x/v1', model: 'm',
+    maxRetries: 0,
+    fetchImpl: async () => {
+      let sent = false;
+      return { ok: true, status: 200,
+        headers: { get: k => k === 'content-type' ? 'text/event-stream' : null },
+        body: { getReader: () => ({
+          async read() {
+            if (sent) return { done: true };
+            sent = true;
+            return { done: false, value: leakBytes };
+          },
+          releaseLock() {},
+          cancel() {},
+        }) } };
+    } });
+  let leakErr = null;
+  try { await leakIde.generate(PROFILE); } catch (e) { leakErr = e; }
+  ck('流内错误消息对 API key 脱敏',
+     !!leakErr && !leakErr.message.includes(leakKey) && leakErr.message.includes('***'),
+     leakErr && leakErr.message.slice(0, 80));
 
   hr('结果: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
