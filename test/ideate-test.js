@@ -1020,6 +1020,33 @@ function mockLLM() {
      effRes5.ok && eb5.length === 3 && !('reasoning_effort' in eb5[2]),
      'calls=' + eb5.length);
 
+  hr('14. 流式思考与正文打字机实时回调 (onStreamChunk)');
+
+  const streamTestJson = JSON.stringify({ ideas: [{ zh: '流式思考题', objectEn: 'retinal vessel segmentation' }] });
+  const streamChunks = [
+    'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: '我正在分析眼底图像病变分割…\n' } }] }),
+    'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: '考虑结合小样本与注意力机制。' } }] }),
+    'data: ' + JSON.stringify({ choices: [{ delta: { content: streamTestJson } }] }),
+    'data: [DONE]',
+  ].join('\n\n') + '\n\n';
+
+  const streamReceived = [];
+  const streamTestIde = createIdeator({
+    apiKey: 'sk-test', baseUrl: 'https://api.openai.com/v1', model: 'deepseek-reasoner',
+    maxRetries: 0,
+    fetchImpl: async () => effSse(streamChunks)
+  });
+
+  const streamGenRes = await streamTestIde.generate(PROFILE, {
+    onStreamChunk: info => streamReceived.push(info)
+  });
+
+  ck('流式生成成功返回结构化题目', streamGenRes.ok && streamGenRes.ideas.length === 1);
+  ck('思维链实时回调成功触发', streamReceived.some(x => x.type === 'thought' && x.delta.includes('眼底图像')));
+  ck('正文实时回调成功触发', streamReceived.some(x => x.type === 'content' && x.delta.includes('流式思考题')));
+  ck('累计全量思考文本 fullThought 正常累积',
+     streamReceived.some(x => x.fullThought && x.fullThought.includes('眼底图像') && x.fullThought.includes('注意力机制')));
+
   hr('结果: ' + pass + ' passed, ' + fail + ' failed');
   process.exit(fail ? 1 : 0);
 })();

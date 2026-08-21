@@ -923,7 +923,7 @@ button.lg {
 .eye:hover { background: var(--bg-sunk-hover); color: var(--fg); transform: translateY(-50%); }
 
 /* ==========================================================================
- * 进度吸顶卡片 (Sticky Progress Hub)
+ * 进度吸顶卡片与模型流式思考打字机监控窗 (Streaming Thought Monitor)
  * ========================================================================== */
 .sticky {
   position: sticky;
@@ -996,6 +996,95 @@ button.lg {
   border-radius: 2px;
   background: var(--primary);
   transition: width 0.3s ease;
+}
+
+/* 流式思考与输出打字机监控折叠窗 */
+.stream-monitor {
+  margin-top: 12px;
+  border: 1px dashed var(--folia-divider);
+  border-radius: var(--r-md);
+  background: var(--bg-sunk);
+  overflow: hidden;
+  transition: all var(--transition-fast);
+}
+.stream-monitor summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--fg-secondary);
+  user-select: none;
+  background: var(--bg-card);
+  transition: background var(--transition-fast);
+}
+.stream-monitor summary::-webkit-details-marker { display: none; }
+.stream-monitor summary:hover { background: var(--bg-sunk-hover); }
+.stream-pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok-fg);
+  box-shadow: 0 0 6px var(--ok-fg);
+  animation: pulseLight 1.4s ease-in-out infinite alternate;
+  flex-shrink: 0;
+}
+@keyframes pulseLight {
+  0% { opacity: 0.4; transform: scale(0.85); }
+  100% { opacity: 1; transform: scale(1.15); }
+}
+.stream-char-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-sunk);
+  border: 1px dashed var(--line);
+  padding: 1px 7px;
+  border-radius: var(--r-xs);
+}
+.stream-monitor .arw {
+  color: var(--fg-muted);
+  font-size: 9px;
+  transition: transform var(--transition-fast);
+  flex-shrink: 0;
+}
+.stream-monitor[open] .arw { transform: rotate(90deg); color: var(--primary); }
+.stream-monitor[open] summary { border-bottom: 1px dashed var(--line); }
+
+.stream-log-wrap {
+  padding: 10px 14px;
+  max-height: 150px;
+  overflow-y: auto;
+  background: var(--bg-sunk);
+}
+.stream-log {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--fg-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.stream-placeholder {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.stream-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 13px;
+  background: var(--primary);
+  vertical-align: -1.5px;
+  margin-left: 2px;
+  animation: cursorBlink 0.8s steps(2, start) infinite;
+}
+@keyframes cursorBlink {
+  to { visibility: hidden; }
 }
 
 /* ==========================================================================
@@ -1718,6 +1807,19 @@ footer {
       </div>
       <div class="bar"><i id="progBar"></i></div>
       <p class="hint" id="progMsg" style="margin:8px 0 0"></p>
+
+      <!-- 模型思考流与数据打字机监控折叠窗 -->
+      <details class="stream-monitor" id="streamMonitor" open>
+        <summary>
+          <span class="stream-pulse"></span>
+          <span id="streamMonitorTitle">模型实时思考动态</span>
+          <span class="stream-char-count" id="streamCharCount">0 字</span>
+          <span class="arw">▶</span>
+        </summary>
+        <div class="stream-log-wrap" id="streamLogWrap">
+          <pre class="stream-log" id="streamLog"><span class="stream-placeholder">等待大模型吐出思考流或题目数据…</span></pre>
+        </div>
+      </details>
     </div>
   </div>
 
@@ -2546,6 +2648,43 @@ let lastRes = null, lastProfile = null;
 let currentFilter = 'all';
 let currentView = 'card';
 
+function resetStreamMonitor(){
+  $('streamMonitor').open = true;
+  $('streamMonitorTitle').textContent = '大模型实时思考与出题动态';
+  $('streamCharCount').textContent = '0 字';
+  $('streamLog').innerHTML = '<span class="stream-placeholder">连接大模型服务中，等待流式输出…</span><span class="stream-cursor"></span>';
+}
+
+function updateStreamLog(chunkInfo){
+  const logEl = $('streamLog');
+  const wrapEl = $('streamLogWrap');
+  const countEl = $('streamCharCount');
+  const titleEl = $('streamMonitorTitle');
+
+  const fullThought = chunkInfo.fullThought || '';
+  const fullContent = chunkInfo.fullContent || '';
+  const totalChars = fullThought.length + fullContent.length;
+  countEl.textContent = totalChars + ' 字';
+
+  let html = '';
+  if (fullThought) {
+    titleEl.textContent = '🧠 正在深度思考推理中…';
+    html += '<span style="color:var(--warn-fg);font-weight:700;">[深度思考思维链]</span>\n' +
+      esc(fullThought) + '\n\n';
+  }
+  if (fullContent) {
+    titleEl.textContent = '✍️ 正在生成结构化题目数据…';
+    html += '<span style="color:var(--ok-fg);font-weight:700;">[题目生成结果]</span>\n' +
+      esc(fullContent);
+  }
+  if (!html) {
+    html = '<span class="stream-placeholder">等待大模型吐出思考流或题目数据…</span>';
+  }
+  html += '<span class="stream-cursor"></span>';
+  logEl.innerHTML = html;
+  wrapEl.scrollTop = wrapEl.scrollHeight;
+}
+
 function setProg(title, msg, pct, stage){
   $('progTitle').textContent = title;
   $('progMsg').textContent = msg || '';
@@ -2560,6 +2699,7 @@ $('go').onclick = async () => {
   $('go').disabled = true;
   $('genErr').innerHTML = '';
   $('progCard').classList.remove('hide');
+  resetStreamMonitor();
 
   const weeksNum = parseInt($('weeks').value, 10) || 16;
   const countNum = parseInt($('count').value, 10) || 6;
@@ -2582,7 +2722,7 @@ $('go').onclick = async () => {
   };
 
   try {
-    /* 阶段 1：LLM 出题 */
+    /* 阶段 1：LLM 出题（支持流式思考打字机输出） */
     const cfg = saveCfg();
     const ideator = createIdeator(cfg);
     activeIdeator = ideator;
@@ -2592,9 +2732,19 @@ $('go').onclick = async () => {
       throw e;
     }
     setProg('正在根据条件生成候选题目…', '正在调用大模型 ' + cfg.model + ' 结合专业与定制要求出题', 20, 1);
-    const g = await ideator.generate(profile);
+    
+    const g = await ideator.generate(profile, {
+      onStreamChunk: chunkInfo => {
+        if (aborted) return;
+        updateStreamLog(chunkInfo);
+      }
+    });
     const ideas = g.ideas;
     if (aborted) return;
+
+    // 阶段 1 完成后，收纳打字机窗口并提示总字数
+    $('streamMonitorTitle').textContent = '✅ 已完成模型出题，正在核验学术文献…';
+    $('streamMonitor').open = false;
 
     /* 阶段 2 & 3：OpenAlex 真实文献核查与条件匹配 */
     setProg('正在调取开放文献库进行双短语核查…', '正在执行 OpenAlex 真实论文计数与饱和度分析', 40, 2);

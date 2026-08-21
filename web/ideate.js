@@ -844,6 +844,23 @@ function createIdeator(cfg) {
   }
 
   /**
+   * 从 chunk 中提取思维链 / 推理过程（DeepSeek/xAI/OpenRouter/Claude）。
+   * 仅用于流式打字机视觉展示，不污染最终正文。
+   */
+  function extractStreamReasoning(data) {
+    if (!data || typeof data !== 'object') return '';
+    const choice = data.choices && data.choices[0];
+    if (choice) {
+      const delta = choice.delta || {};
+      if (typeof delta.reasoning_content === 'string') return delta.reasoning_content;
+      if (typeof delta.reasoning === 'string') return delta.reasoning;
+      if (typeof delta.thinking === 'string') return delta.thinking;
+    }
+    if (data.delta && typeof data.delta.thinking === 'string') return data.delta.thinking;
+    return '';
+  }
+
+  /**
    * 流内错误提取（参考 SillyTavern tryParseStreamingError, openai.js:1624）。
    * 部分供应商在 SSE 流中嵌入错误 JSON，需要在拼接正文前拦截。
    */
@@ -865,7 +882,7 @@ function createIdeator(cfg) {
    * 流式 chat 请求。stream=true 时用 SSE 逐块累积，避免正文挂起超时和 max_tokens 截断。
    * 若流式通道本身失败（如供应商不支持 SSE），静默回退非流式。
    */
-  async function chatStream(messages, maxTokens, extra) {
+  async function chatStream(messages, maxTokens, extra, onChunk) {
     const body = buildChatBody(messages, maxTokens, true, extra);
     const url = endpoint(c.baseUrl, adapter.chatPath(c.model, true));
     const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -880,6 +897,7 @@ function createIdeator(cfg) {
     armTimer();
     if (ctl) inFlight.add(ctl);
     let full = '';
+    let fullReasoning = '';
     let reader = null;
     try {
       const res = await doFetch(url, {
@@ -902,7 +920,11 @@ function createIdeator(cfg) {
         let data;
         try { data = JSON.parse(raw); }
         catch (e) { throw invalidJson(res, raw, '流式生成选题'); }
-        return extractContent(data);
+        const parsedTxt = extractContent(data);
+        if (typeof onChunk === 'function' && parsedTxt) {
+          onChunk({ delta: parsedTxt, type: 'content', fullThought: '', fullContent: parsedTxt });
+        }
+        return parsedTxt;
       }
       if (!res.body || typeof res.body.getReader !== 'function') {
         const e = new Error('当前环境不支持流式响应读取');
@@ -920,7 +942,20 @@ function createIdeator(cfg) {
         try { chunk = JSON.parse(data); } catch (e) { continue; }
         const streamErr = tryParseStreamError(chunk);
         if (streamErr) throw streamErr;
-        full += extractStreamDelta(chunk);
+        const reasoningDelta = extractStreamReasoning(chunk);
+        const contentDelta = extractStreamDelta(chunk);
+        if (reasoningDelta) {
+          fullReasoning += reasoningDelta;
+          if (typeof onChunk === 'function') {
+            onChunk({ delta: reasoningDelta, type: 'thought', fullThought: fullReasoning, fullContent: full });
+          }
+        }
+        if (contentDelta) {
+          full += contentDelta;
+          if (typeof onChunk === 'function') {
+            onChunk({ delta: contentDelta, type: 'content', fullThought: fullReasoning, fullContent: full });
+          }
+        }
         const finish = readStreamFinishReason(chunk);
         if (finish && TRUNCATED_FINISH.has(finish)) truncatedFinish = finish;
         else if (finish && BLOCKED_FINISH.has(finish)) blockedFinish = finish;
@@ -975,6 +1010,7 @@ function createIdeator(cfg) {
   async function chat(messages, opts) {
     const o = opts || {};
     const maxTokens = Number.isFinite(o.maxTokens) ? o.maxTokens : c.maxTokens;
+    const onChunk = typeof o.onChunk === 'function' ? o.onChunk : null;
     // reasoning_effort 只在调用方明确要求时下发；若网关不认这个参数，
     // 摘掉它重发一次，而不是把整次生成判死。
     let extra = o.reasoningEffort ? { reasoningEffort: o.reasoningEffort } : null;
@@ -989,7 +1025,7 @@ function createIdeator(cfg) {
       for (let i = 0; i <= c.maxRetries; i++) {
         throwIfAborted('生成选题');
         try {
-          const streamTxt = await chatStream(messages, maxTokens, extra);
+          const streamTxt = await chatStream(messages, maxTokens, extra, onChunk);
           if (streamTxt) return { text: streamTxt, via: 'stream' };
           break;
         } catch (e) {
@@ -1285,13 +1321,17 @@ function createIdeator(cfg) {
   }
 
   /** 主入口：根据学生情况生成候选题目；截断时递增预算重试。 */
-  async function generate(profile) {
+  async function generate(profile, options) {
     if (!configured()) {
       const e = new Error('未配置大模型：需要填写完整的 Base URL、API Key 与 Model');
       e.code = 'NOT_CONFIGURED';
       throw e;
     }
     abortedByUser = false;
+    const opts = Object.assign({}, typeof profile === 'object' && profile ? profile : {}, options || {});
+    const onStreamChunk = typeof opts.onStreamChunk === 'function' ? opts.onStreamChunk
+      : (typeof opts.onStream === 'function' ? opts.onStream : (typeof c.onStreamChunk === 'function' ? c.onStreamChunk : null));
+
     const userPrompt = buildUserPrompt(profile);
     const wanted = Math.max(1, Number(profile && profile.count) || 8);
     // 按题数与模型类型算预算；推理模型额外留思维链额度。
@@ -1314,7 +1354,7 @@ function createIdeator(cfg) {
     let chatResult;
     throwIfAborted('生成选题');
     try {
-      chatResult = await chat(standard, { maxTokens: budget0 });
+      chatResult = await chat(standard, { maxTokens: budget0, onChunk: onStreamChunk });
       throwIfAborted('生成选题');
       const ideas = parseIdeas(chatResult.text);
       const clean = extractPayloadText(chatResult.text);
@@ -1367,7 +1407,7 @@ function createIdeator(cfg) {
         chatResult = await chat([
           { role: 'system', content: IDEATE_SYSTEM_PROMPT + notes.join('\n') },
           { role: 'user', content: retryUser },
-        ], { maxTokens: a.budget, reasoningEffort: a.effort || undefined });
+        ], { maxTokens: a.budget, reasoningEffort: a.effort || undefined, onChunk: onStreamChunk });
         throwIfAborted('生成选题');
         const ideas = parseIdeas(chatResult.text);
         const clean = extractPayloadText(chatResult.text);
