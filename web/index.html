@@ -930,6 +930,12 @@ button.lg {
   color: var(--fg);
 }
 .gw-flow .gw-safe { color: var(--ok-fg); font-weight: 700; }
+.ctitle-badge.gw-desync {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-fg);
+  font-weight: 700;
+}
 .gw-flow .gw-warn { color: var(--warn-fg); font-weight: 700; }
 .input-with-btn { display: flex; gap: 8px; align-items: center; }
 .input-with-btn input { flex: 1; min-width: 0; }
@@ -2267,10 +2273,10 @@ footer {
 <!-- ?v= 是缓存破除标记：GitHub Pages 对静态资源下发 Cache-Control: max-age=600，
      不带版本参数时部署后浏览器最长 10 分钟仍在跑旧 JS（新功能看不到）。
      改动 web/*.js 后请同步上调这个日期戳。 -->
-<script src="angles.js?v=20260821c"></script>
-<script src="engine.js?v=20260821c"></script>
-<script src="verify.js?v=20260821c"></script>
-<script src="ideate.js?v=20260821c"></script>
+<script src="angles.js?v=20260821d"></script>
+<script src="engine.js?v=20260821d"></script>
+<script src="verify.js?v=20260821d"></script>
+<script src="ideate.js?v=20260821d"></script>
 <script>
 (function(){
 const $ = id => document.getElementById(id);
@@ -2347,7 +2353,10 @@ const store = (() => {
   try { m = JSON.parse(localStorage.getItem('xt_cache') || '{}'); } catch(e){}
   return {
     get: k => m[k],
-    set: (k, v) => { m[k] = v; try { localStorage.setItem('xt_cache', JSON.stringify(m)); } catch(e){} }
+    set: (k, v) => { m[k] = v; try { localStorage.setItem('xt_cache', JSON.stringify(m)); } catch(e){} },
+    // 清除本地数据时必须连内存副本一起清：
+    // 只删 localStorage 的话，下一次 set() 会把闭包里的整份旧缓存写回去。
+    clear: () => { m = {}; try { localStorage.removeItem('xt_cache'); } catch(e){} }
   };
 })();
 
@@ -2427,17 +2436,19 @@ function setBadge(state, text){
 function refreshBadge(){
   const c = { baseUrl: $('baseUrl').value.trim(), apiKey: $('apiKey').value.trim(), model: $('model').value.trim() };
   refreshModelNote(c.model);
-  // 网关模式下必填项不同：builtin 只需网关+模型，proxy 还需上游地址与密钥
+  // 地址必须带协议头：缺 https:// 会被当相对路径，密钥会发到本站点日志里。
+  // 判定口径必须与引擎 configured() 一致，否则界面显示"待检查"而实际根本发不出去。
+  const abs = u => /^https?:\/\//i.test(u);
   const gwUrl = $('gatewayUrl').value.trim();
   if (gatewayMode === 'builtin') {
-    if (!gwUrl || !c.model) { setBadge('bad', '未填完'); return false; }
+    if (!abs(gwUrl) || !c.model) { setBadge('bad', '未填完'); return false; }
     setBadge('warn', '待检查'); return true;
   }
   if (gatewayMode === 'proxy') {
-    if (!gwUrl || !c.baseUrl || !c.apiKey || !c.model) { setBadge('bad', '未填完'); return false; }
+    if (!abs(gwUrl) || !abs(c.baseUrl) || !c.apiKey || !c.model) { setBadge('bad', '未填完'); return false; }
     setBadge('warn', '待检查'); return true;
   }
-  if (!c.baseUrl || !c.apiKey || !c.model) { setBadge('bad', '未填完'); return false; }
+  if (!abs(c.baseUrl) || !c.apiKey || !c.model) { setBadge('bad', '未填完'); return false; }
   setBadge('warn', '待检查');
   return true;
 }
@@ -2470,6 +2481,9 @@ presetSel.addEventListener('change', () => {
   if (p.defaultModel) $('model').value = p.defaultModel;
   saveCfg();
   refreshBadge();
+  // 预设会改写 baseUrl，也就是 proxy 模式下的 x-target-url，
+  // 不刷新去向面板会让界面显示旧上游。
+  renderDataFlow();
   $('fetchModelsMsg').innerHTML = p.docs
     ? '<span class="hint">已选预设：' + esc(p.name) + '，可前往 <a href="' + esc(p.docs) + '" target="_blank">官网控制台 ↗</a> 获取 API Key</span>'
     : '';
@@ -2528,14 +2542,30 @@ function syncGatewayUI(){
   document.querySelectorAll('#gwModeCards .radio-card').forEach(el => {
     el.classList.toggle('active', el.dataset.gwmode === gatewayMode);
   });
-  $('gwBadge').textContent = GW_BADGE[gatewayMode] || GW_BADGE.off;
+  /*
+   * 徽标必须反映引擎的真实模式，不能只看本地变量。
+   * 反例：选了 builtin 但把网关地址清空 —— 引擎会退回直连（off），
+   * 若徽标仍写「已启用·免 Key」，用户就会以为不发密钥，
+   * 实际上残留的 key 会直发供应商。
+   */
+  const effective = effectiveGatewayMode();
+  const desynced = effective !== gatewayMode;
+  $('gwBadge').textContent = desynced
+    ? '配置未完成 · 实际为浏览器直连'
+    : (GW_BADGE[effective] || GW_BADGE.off);
+  $('gwBadge').className = 'ctitle-badge' + (desynced ? ' gw-desync' : '');
   $('gwUrlWrap').style.display = gatewayMode === 'off' ? 'none' : '';
-  // builtin 下本地 Key 与上游地址都用不上，直接置灰，避免用户白填
-  const idleLocal = gatewayMode === 'builtin';
+  // 只有「引擎确实处于 builtin」时才置灰，避免置灰了却仍在直连发 key
+  const idleLocal = effective === 'builtin';
   $('apiKey').disabled = idleLocal;
   $('baseUrl').disabled = idleLocal;
   $('apiKey').placeholder = idleLocal ? '内置模式无需密钥' : 'sk-...';
   renderDataFlow();
+}
+
+/** 引擎实际会采用的模式（网关地址缺失时会退回 off） */
+function effectiveGatewayMode(){
+  try { return createIdeator(saveCfg(false)).gatewayMode; } catch(e){ return 'off'; }
 }
 
 /* 把「密钥到底发往哪里」当面告知，而不是让用户自己猜 */
@@ -2547,6 +2577,14 @@ function renderDataFlow(){
   if (!flow) { box.textContent = ''; return; }
 
   const host = esc(flow.requestHost || '(未填地址)');
+  // 选了网关但地址没填全 -> 引擎已退回直连，必须当面说清，否则就是误导
+  if (gatewayMode !== 'off' && flow.mode === 'off') {
+    box.innerHTML = '<span class="gw-warn">⚠ 网关地址未填写完整，当前实际为浏览器直连。</span>' +
+      '<br>请求会直接发往 <code>' + host + '</code>' +
+      ($('apiKey').value.trim() ? '，<b>并携带你本地填写的密钥</b>' : '') +
+      '。填好上方「云网关地址」后才会真正走网关。';
+    return;
+  }
   if (flow.mode === 'off') {
     box.innerHTML = '<b>当前数据去向：</b>浏览器直接请求 <code>' + host + '</code>，' +
       '并携带你的密钥（<code>Authorization</code>）。' +
@@ -2573,7 +2611,13 @@ document.querySelectorAll('#gwModeCards .radio-card').forEach(el => {
     refreshBadge();
   });
 });
-$('gatewayUrl').addEventListener('input', () => { saveCfg(false); renderDataFlow(); refreshBadge(); });
+$('gatewayUrl').addEventListener('input', () => {
+  saveCfg(false);
+  // 必须走 syncGatewayUI：地址被清空时引擎会退回直连，
+  // 徽标与「密钥框禁用」状态都得跟着变，否则界面会谎称仍在免 Key 模式。
+  syncGatewayUI();
+  refreshBadge();
+});
 
 /* ---------- 本地数据管理 ---------- */
 function renderStorageNote(){
@@ -2614,18 +2658,24 @@ $('clearKeyBtn').addEventListener('click', () => {
 
 $('clearAllBtn').addEventListener('click', () => {
   if (!confirm('将清除本站全部本地数据（接口配置、密钥与文献缓存），确定？')) return;
-  try {
-    localStorage.removeItem(CFG_KEY);
-    // 顺手清本站自己的其余缓存键，不动其他站点的数据
-    Object.keys(localStorage).filter(k => /^xt_/.test(k)).forEach(k => localStorage.removeItem(k));
-  } catch(e){}
+  // 先清 DOM 再清存储：syncGatewayUI/renderDataFlow 内部会调 saveCfg，
+  // 若 DOM 里还留着旧值，配置会被当场重新写回，等于没清。
   $('apiKey').value = '';
   $('gatewayUrl').value = '';
+  $('baseUrl').value = '';
+  $('model').value = '';
   gatewayMode = 'off';
+  store.clear();                 // 连内存副本一起清，否则下次 set() 会写回旧缓存
+  try {
+    Object.keys(localStorage).filter(k => /^xt_/.test(k)).forEach(k => localStorage.removeItem(k));
+    localStorage.removeItem(CFG_KEY);
+  } catch(e){}
   syncGatewayUI();
+  // syncGatewayUI 会触发 saveCfg 落盘一份空配置，这里再抹一次，确保存储为空
+  try { localStorage.removeItem(CFG_KEY); } catch(e){}
   renderStorageNote();
   refreshBadge();
-  toast('已清除全部本地数据');
+  toast('已清除全部本地数据（含文献缓存）');
 });
 
 ['baseUrl', 'apiKey', 'model'].forEach(id => {

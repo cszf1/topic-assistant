@@ -123,8 +123,23 @@ function candidateApiRoots(rawBaseUrl) {
   return out;
 }
 
+/**
+ * 拼接请求地址。
+ *
+ * 这里必须拒绝缺少协议头的地址：用户漏写 https:// 只填 api.deepseek.com 时，
+ * 浏览器会把它当相对路径解析成 <当前站点>/api.deepseek.com/chat/completions，
+ * 于是 Authorization 会连同密钥一起发到托管站点（如 *.github.io）的访问日志里。
+ * 宁可当场报错，也不能静默把密钥发错地方。
+ */
 function endpoint(baseUrl, path) {
-  return normalizeBaseUrl(baseUrl) + '/' + String(path).replace(/^\/+/, '');
+  const root = normalizeBaseUrl(baseUrl);
+  if (!/^https?:\/\//i.test(root)) {
+    const e = new Error('接口地址必须以 http:// 或 https:// 开头，当前为：' +
+      (root || '(空)') + '。缺少协议头会导致请求连同密钥被发往本站点而非目标服务。');
+    e.kind = 'not_configured';
+    throw e;
+  }
+  return root + '/' + String(path).replace(/^\/+/, '');
 }
 
 /* ------------------------------------------------------- 思维链剥离 */
@@ -386,7 +401,11 @@ function createIdeator(cfg) {
 
   function configured() {
     if (!doFetch) return false;
+    const hasScheme = u => /^https?:\/\//i.test(String(u || '').trim());
     const mode = gatewayMode();
+    // 地址缺协议头时视为未配置：否则界面显示"可用"，一发请求就把密钥送错地方
+    if (mode !== 'off' && !hasScheme(c.gatewayUrl)) return false;
+    if (mode !== 'builtin' && !hasScheme(c.baseUrl)) return false;
     // builtin：密钥在服务端，本地只需网关地址与模型名
     if (mode === 'builtin') return !!(c.gatewayUrl && c.model);
     // proxy：需要网关地址 + 上游地址 + 上游密钥（网关不会代提供密钥）
@@ -423,7 +442,9 @@ function createIdeator(cfg) {
    */
   function gatewayMode() {
     const m = String(c.gatewayMode || 'off');
-    if ((m === 'builtin' || m === 'proxy') && c.gatewayUrl) return m;
+    // 网关地址必须是绝对 https/http 地址，否则退回直连而不是发到一个相对路径
+    if ((m === 'builtin' || m === 'proxy') &&
+        /^https?:\/\//i.test(String(c.gatewayUrl || '').trim())) return m;
     return 'off';
   }
 
@@ -1525,7 +1546,12 @@ function createIdeator(cfg) {
       const credFields = Object.keys(h).filter(k =>
         /^(authorization|x-api-key|x-goog-api-key|x-custom-api-key)$/i.test(k));
       let host = '';
-      try { host = new URL(normalizeBaseUrl(requestRoot())).host; } catch (e) { host = '(地址无效)'; }
+      const rawRoot = normalizeBaseUrl(requestRoot());
+      if (!/^https?:\/\//i.test(rawRoot)) {
+        host = rawRoot ? '(地址缺少 https:// 前缀)' : '(未填地址)';
+      } else {
+        try { host = new URL(rawRoot).host; } catch (e) { host = '(地址无效)'; }
+      }
       return {
         mode,
         requestHost: host,

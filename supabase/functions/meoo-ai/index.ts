@@ -28,6 +28,19 @@
  *      否则这就是一个公开的匿名开放代理，会被刷爆云函数额度。
  *      白名单可用环境变量 PROXY_ALLOWED_HOSTS 覆盖（逗号分隔，支持 .example.com 后缀匹配）。
  *
+ *   4. 重定向必须逐跳重新校验。
+ *      fetch 默认 redirect:'follow'，只校验初始 URL 是不够的：白名单内的域名
+ *      （或存在开放重定向的域名）只需返回 Location: http://127.0.0.1/，
+ *      就能把本函数当成内网跳板。已实测复现（redirector -> INTERNAL）。
+ *      现改为 redirect:'manual'，每一跳的 Location 都重跑 validateTarget()，且限制跳数。
+ *
+ *   5. 轨道 A 必须限额。
+ *      网关 URL 写在纯静态页面里，等于公开；而轨道 A 花的是平台密钥。
+ *      若不限制 max_tokens 与请求体积，任何人 POST 一次
+ *      {model:'glm-5', max_tokens:1000000} 就能烧掉额度。
+ *      现对轨道 A 施加输出上限、消息条数/字符上限，并可用
+ *      GATEWAY_ALLOWED_ORIGINS 限定来源（默认放开，便于本地调试）。
+ *
  * 【文档】https://docs.meoo.com/ai ｜ https://docs.meoo.com/file-6
  */
 
@@ -50,16 +63,29 @@ const DEFAULT_ALLOWED_HOSTS = [
   'api.openai.com',
   'open.bigmodel.cn',
   'api.moonshot.cn',
+  'api.minimaxi.com',   // 与 PROVIDER_PRESETS 中的 minimax 预设保持一致
   'api.minimax.chat',
   'dashscope.aliyuncs.com',
   'api.meoo.host',
 ];
+
+/*
+ * 轨道 A 限额。轨道 B 花的是用户自己的密钥，不设这些上限。
+ * 数值按本工具实际需要留足余量：8 题结构化 JSON 实测约 3000~4500 tokens。
+ */
+const BUILTIN_MAX_OUTPUT_TOKENS = 16384;
+const BUILTIN_MAX_MESSAGES = 32;
+const BUILTIN_MAX_CHARS = 60000;
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers':
     'authorization, x-client-info, apikey, content-type, x-target-url, x-custom-api-key',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  // 上游 content-type 是透传的；若上游返回 text/html，
+  // 没有这两个头就等于在本函数所在源上执行了它的脚本。
+  'X-Content-Type-Options': 'nosniff',
+  'Content-Security-Policy': "default-src 'none'; sandbox",
 };
 
 function json(body: unknown, status = 200) {
@@ -80,25 +106,106 @@ function allowedHosts(): string[] {
   return list.length ? list : DEFAULT_ALLOWED_HOSTS;
 }
 
-/** 私有/保留地址判定：挡住内网跳板与云元数据端点 */
+/** 允许调用本网关的页面来源；未配置则放开（便于本地调试与自建部署） */
+function originAllowed(req: Request): boolean {
+  const raw = Deno.env.get('GATEWAY_ALLOWED_ORIGINS');
+  if (!raw) return true;
+  const list = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  if (!list.length) return true;
+  const origin = (req.headers.get('origin') || '').toLowerCase();
+  if (!origin) return false;              // 配了名单就要求带 Origin
+  return list.includes(origin);
+}
+
+/** 轨道 A 请求规模检查：防止有人拿平台密钥跑超长任务 */
+function checkBuiltinQuota(input: Record<string, unknown>):
+  { ok: true } | { ok: false; message: string } {
+  const msgs = input.messages;
+  if (!Array.isArray(msgs) || !msgs.length) {
+    return { ok: false, message: 'messages 必须是非空数组' };
+  }
+  if (msgs.length > BUILTIN_MAX_MESSAGES) {
+    return { ok: false, message: '内置模式最多 ' + BUILTIN_MAX_MESSAGES + ' 条消息，当前 ' + msgs.length };
+  }
+  let chars = 0;
+  for (const m of msgs) {
+    const cont = m && (m as Record<string, unknown>).content;
+    chars += typeof cont === 'string' ? cont.length : JSON.stringify(cont ?? '').length;
+  }
+  if (chars > BUILTIN_MAX_CHARS) {
+    return { ok: false, message: '内置模式单次输入上限 ' + BUILTIN_MAX_CHARS + ' 字符，当前 ' + chars };
+  }
+  return { ok: true };
+}
+
+/** 四段十进制判定，供 isBlockedHost 复用 */
+function isBlockedIPv4(a: number, b: number, c: number, d: number): boolean {
+  if ([a, b, c, d].some(n => !Number.isFinite(n) || n < 0 || n > 255)) return true;
+  if (a === 0 || a === 127 || a === 10) return true;            // 本网 / 回环 / 私有 A
+  if (a === 169 && b === 254) return true;                      // 链路本地（云元数据 169.254.169.254）
+  if (a === 172 && b >= 16 && b <= 31) return true;             // 私有 B
+  if (a === 192 && b === 168) return true;                      // 私有 C
+  if (a === 192 && b === 0 && c === 0) return true;             // IETF 协议分配 192.0.0.0/24
+  if (a === 198 && (b === 18 || b === 19)) return true;         // 基准测试 198.18.0.0/15
+  if (a === 100 && b >= 64 && b <= 127) return true;            // 运营商级 NAT
+  if (a >= 224) return true;                                    // 组播 / 保留
+  return false;
+}
+
+/**
+ * 私有/保留地址判定：挡住内网跳板与云元数据端点。
+ *
+ * 这是文档宣称的最后一道防线，所以不能只认标准点分十进制：
+ * 127.1、2130706433、0x7f000001、0177.0.0.1、[::ffff:127.0.0.1]、
+ * [0:0:0:0:0:0:0:1] 都能指向回环，必须一并识别。
+ */
 function isBlockedHost(host: string): boolean {
-  const h = host.toLowerCase();
-  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h.endsWith('.local')) return true;
+  const h = host.toLowerCase().replace(/\.$/, '');   // 去掉尾点（opencode.ai. 之类）
+  if (h === 'localhost' || h.endsWith('.localhost') ||
+      h.endsWith('.internal') || h.endsWith('.local') ||
+      h.endsWith('.home.arpa') || h === 'metadata' ||
+      h.endsWith('.metadata.google.internal')) return true;
 
-  // IPv6 回环与唯一本地地址
-  const v6 = h.replace(/^\[|\]$/g, '');
-  if (v6 === '::1' || v6 === '::' || /^f[cd][0-9a-f]{2}:/i.test(v6) || /^fe80:/i.test(v6)) return true;
+  // ---- IPv6 ----
+  if (h.includes(':')) {
+    const v6 = h.replace(/^\[|\]$/g, '');
+    // IPv4 映射 / NAT64：::ffff:127.0.0.1、64:ff9b::7f00:1
+    const mapped = v6.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (mapped) {
+      return isBlockedIPv4(Number(mapped[1]), Number(mapped[2]), Number(mapped[3]), Number(mapped[4]));
+    }
+    // 展开后全零段视为回环/未指定
+    const groups = v6.split(':').filter(x => x !== '');
+    const allZeroOrOne = groups.every(g => /^0+$/.test(g) || g === '1');
+    if (allZeroOrOne) return true;                       // ::1 / :: / 0:0:...:1
+    if (/^f[cd][0-9a-f]{2}$/.test(groups[0] || '')) return true;   // fc00::/7 唯一本地
+    if (/^fe[89ab][0-9a-f]$/.test(groups[0] || '')) return true;   // fe80::/10 链路本地
+    if (/^64:ff9b/.test(v6)) return true;                          // NAT64 前缀
+    return false;
+  }
 
-  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return false;
-  const [a, b] = [Number(m[1]), Number(m[2])];
-  if ([a, b, Number(m[3]), Number(m[4])].some(n => n > 255)) return true;
-  if (a === 127 || a === 0 || a === 10) return true;                 // 回环 / 本网 / 私有 A
-  if (a === 169 && b === 254) return true;                           // 链路本地（云元数据 169.254.169.254）
-  if (a === 172 && b >= 16 && b <= 31) return true;                  // 私有 B
-  if (a === 192 && b === 168) return true;                           // 私有 C
-  if (a === 100 && b >= 64 && b <= 127) return true;                 // 运营商级 NAT
-  if (a >= 224) return true;                                         // 组播 / 保留
+  // ---- 点分十进制 ----
+  const dotted = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (dotted) {
+    return isBlockedIPv4(Number(dotted[1]), Number(dotted[2]), Number(dotted[3]), Number(dotted[4]));
+  }
+
+  // ---- 非标准 IP 写法：纯十进制 / 十六进制 / 八进制 / 短式 ----
+  // 只要整个主机名由数字与点（含 0x/0 前缀）组成，就按 IP 解析后判定；
+  // 解析不出来则一律拒绝，避免用奇怪写法绕过。
+  if (/^(0x[0-9a-f]+|\d+)(\.(0x[0-9a-f]+|\d+))*$/.test(h)) {
+    const parts = h.split('.').map(p =>
+      /^0x/.test(p) ? parseInt(p, 16) : (/^0\d+$/.test(p) ? parseInt(p, 8) : parseInt(p, 10)));
+    if (parts.some(n => !Number.isFinite(n))) return true;
+    let v = 0;
+    if (parts.length === 1) v = parts[0];                        // 2130706433 / 0x7f000001
+    else if (parts.length === 2) v = parts[0] * 0x1000000 + parts[1];        // 127.1
+    else if (parts.length === 3) v = parts[0] * 0x1000000 + parts[1] * 0x10000 + parts[2];
+    else if (parts.length === 4) v = parts[0] * 0x1000000 + parts[1] * 0x10000 + parts[2] * 0x100 + parts[3];
+    else return true;
+    if (v < 0 || v > 0xffffffff) return true;
+    return isBlockedIPv4((v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255);
+  }
   return false;
 }
 
@@ -134,10 +241,57 @@ function validateTarget(raw: string):
   return { ok: true, url: u };
 }
 
+/**
+ * 安全转发：手动处理重定向，每一跳都重新过 validateTarget。
+ *
+ * 为何不用默认的 redirect:'follow'：白名单只能约束第一跳，
+ * 上游一个 302 就能把请求带到 127.0.0.1 / 169.254.169.254。
+ * verifyEachHop 为 false 时（轨道 A）只限制跳数、不做白名单校验，
+ * 因为轨道 A 的目标是平台自己注入的可信地址。
+ */
+async function safeFetch(
+  targetUrl: string,
+  init: RequestInit,
+  verifyEachHop: boolean,
+  maxHops = 3,
+): Promise<Response> {
+  let current = targetUrl;
+  let nextInit: RequestInit = init;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    const res = await fetch(current, { ...nextInit, redirect: 'manual' });
+    if (res.status < 300 || res.status >= 400) return res;
+
+    const loc = res.headers.get('location');
+    if (!loc) return res;                        // 3xx 但无 Location，原样交回
+    if (hop === maxHops) {
+      throw new Error('上游重定向次数过多（>' + maxHops + '），已中止');
+    }
+
+    const next = new URL(loc, current).href;
+    if (verifyEachHop) {
+      const v = validateTarget(next);
+      if (!v.ok) {
+        // 这正是白名单绕过的入口，必须在此断开
+        throw new Error('上游重定向到不允许的地址，已拦截：' + v.message);
+      }
+    }
+    // 跳转后不再携带请求体与凭据，避免密钥跟着 Location 跑到别处
+    nextInit = { method: 'GET', headers: { 'Content-Type': 'application/json' } };
+    current = next;
+  }
+  throw new Error('上游重定向处理异常');
+}
+
 Deno.serve(async (req) => {
   // ---------- 1. CORS 预检 ----------
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  // 可选的来源白名单：部署到生产后建议配 GATEWAY_ALLOWED_ORIGINS，
+  // 否则这个网关对全网开放，轨道 A 的平台额度谁都能花。
+  if (!originAllowed(req)) {
+    return json({ error: { message: '请求来源不在允许名单内' } }, 403);
   }
 
   const url = new URL(req.url);
@@ -146,11 +300,17 @@ Deno.serve(async (req) => {
   const lastSeg = path.split('/').pop() || '';
 
   // ---------- 2. 路由模式识别 ----------
-  const customTargetUrl = req.headers.get('x-target-url') || url.searchParams.get('target_url');
+  // 只从请求头取目标，不接受 ?target_url= query：
+  // query 形态可被 <img src> / 顶层导航等无需预检的方式触发。
+  const customTargetUrl = req.headers.get('x-target-url');
   const isProxyMode = Boolean(customTargetUrl);
-  // 代理模式下只认显式传入的密钥；绝不回退平台密钥（见文件头安全约束 1）
-  const clientKey = (req.headers.get('x-custom-api-key') ||
-    (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')).trim();
+  /*
+   * 代理模式只认 x-custom-api-key。
+   * 不能回退读 Authorization：Supabase 在 verify_jwt=true 时要求调用方带
+   * Authorization: Bearer <anon/service_role>，那是平台凭据，
+   * 一旦被当成上游 Bearer 转发出去，等于把平台密钥送给第三方。
+   */
+  const clientKey = (req.headers.get('x-custom-api-key') || '').trim();
 
   // ---------- 3. 模型列表 ----------
   // 覆盖 GET /meoo-ai、/meoo-ai/models、/v1/models 等形态
@@ -164,7 +324,8 @@ Deno.serve(async (req) => {
       try {
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
         if (clientKey) headers['Authorization'] = 'Bearer ' + clientKey;
-        const upstreamRes = await fetch(upstreamUrl(v.url.href, 'models'), { method: 'GET', headers });
+        const upstreamRes = await safeFetch(upstreamUrl(v.url.href, 'models'),
+          { method: 'GET', headers }, true);
         const text = await upstreamRes.text();
         return new Response(text, {
           status: upstreamRes.status,
@@ -218,6 +379,9 @@ Deno.serve(async (req) => {
         message: '不支持的 Meoo 内置模型 [' + model + ']，当前支持：' +
           MEOO_OFFICIAL_MODELS.join('、') + '。如需第三方模型，请通过 x-target-url 指定自定义接口。' } }, 400);
     }
+    // 轨道 A 花的是平台密钥，必须限规模
+    const q = checkBuiltinQuota(input);
+    if (!q.ok) return json({ error: { message: q.message } }, 413);
   }
 
   // ---------- 5. 规范化请求体 ----------
@@ -227,18 +391,22 @@ Deno.serve(async (req) => {
     stream: input.stream !== false,
   };
   if (typeof input.temperature === 'number') body.temperature = input.temperature;
-  if (typeof input.max_tokens === 'number') body.max_tokens = input.max_tokens;
-  if (typeof input.max_completion_tokens === 'number') body.max_completion_tokens = input.max_completion_tokens;
+  // 轨道 A 夹取输出上限；轨道 B 用户自付费，原样尊重
+  const capTokens = (n: number) => isProxyMode ? n : Math.min(n, BUILTIN_MAX_OUTPUT_TOKENS);
+  if (typeof input.max_tokens === 'number') body.max_tokens = capTokens(input.max_tokens);
+  if (typeof input.max_completion_tokens === 'number') {
+    body.max_completion_tokens = capTokens(input.max_completion_tokens);
+  }
   if (typeof input.reasoning_effort === 'string') body.reasoning_effort = input.reasoning_effort;
   if (input.response_format) body.response_format = input.response_format;
 
   // ---------- 6. 转发并流式直通 ----------
   try {
-    const upstreamRes = await fetch(upstreamUrl(targetBaseUrl, 'chat/completions'), {
+    const upstreamRes = await safeFetch(upstreamUrl(targetBaseUrl, 'chat/completions'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + finalApiKey },
       body: JSON.stringify(body),
-    });
+    }, isProxyMode);
     // 直接透传 ReadableStream，保住前端的思维链打字机实时效果
     return new Response(upstreamRes.body, {
       status: upstreamRes.status,
